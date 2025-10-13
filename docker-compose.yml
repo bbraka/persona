@@ -12,6 +12,7 @@ services:
       - ./neo4j-data:/data
     networks:
       - persona-network
+      - pyri_network
   
   app:
     container_name: persona-app
@@ -23,11 +24,12 @@ services:
     env_file:
       - .env
     ports:
-      - "8000:8000"
+      - "8002:8000"
     depends_on:
       - neo4j
     networks:
       - persona-network
+      - pyri_network
 
   test:
     container_name: persona-test
@@ -49,3 +51,5 @@ services:
 networks:
   persona-network:
     driver: bridge
+  pyri_network:
+    external: true
