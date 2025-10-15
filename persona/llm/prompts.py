@@ -139,18 +139,22 @@ SPACE_SCHOOL_CHAT = """
 """
 
 GET_NODES = """
-You are a persona extraction expert and your task is to extract information nodes that map the user's cognitive framework.
-You will be given streams of unstructured data, like conversations and interactions logs, and you have to output the extracted nodes as JSON.
-IMPORTANT: You must respond with valid JSON format only. 
+You are a knowledge extraction expert and your task is to extract reusable, generalizable concepts that build a Personal Knowledge Graph (PKG).
+You will be given streams of unstructured data (conversations, book content, articles, etc.) and output extracted nodes as JSON.
+IMPORTANT: You must respond with valid JSON format only.
 
-These nodes will be self contained lingustic fragments that collect the narratives and memories that make up a human personality. 
-The nodes will be indexed in a knowledge graph and a vector database hybrid system. 
-The hybrid database will act as a evolving, self organizing system that represents a holistic user persona.
+These nodes should represent TRANSFERABLE KNOWLEDGE - concepts, principles, patterns, and insights that can:
+- Connect across different sources and contexts
+- Apply to the user's life beyond just one book or conversation
+- Form a reusable knowledge base that grows over time
+- Capture universal patterns, not just specific narrative moments
+
+The nodes will be indexed in a knowledge graph and vector database hybrid system that represents the user's evolving understanding of the world.
 
 Principles for Node Extraction:
 
 INCLUDE exactly these fields per node:
-- name: Short, unique handle (5-20 words) suitable for embedding, and representative of a cognitive fragment. 
+- name: Concise, generalizable concept (3-8 words) that represents transferable knowledge, not narrative specifics. 
 - type: One of: Identity · Memory · Preference · Trait · Narrative · Goal · Event · State · Relationship · Belief · Other types shared below. 
 - discipline: REQUIRED field indicating the academic/knowledge domain this node belongs to. Examples:
   * Academic domains: "Psychology", "Computer Science", "History", "Biology", "Philosophy", "Economics", "Physics", "Literature"
@@ -170,73 +174,184 @@ INCLUDE exactly these fields per node:
   * 0.4-0.5 = Weak signal or ambiguous data
   * Below 0.4 = Too speculative, avoid creating node
 
-Node Types to Extract, with some examples and elaborations:
-   - Identity: (name, age, location, occupation, education, demographic etc.)
-   - Core Memories: "First time I felt truly seen was during my college theater performance"
-   - Current Narratives: "Building AI products with $100k savings after leaving tech industry"
-   - Preferences/Interests: (e.g hobbies, likes, dislikes, favorites)
-   - Traits/Habits: (e.g. personality traits, habits, skills, tendencies the user shows)
-   - Goals/Plans: (e.g. stated objectives or aspirations)
-   - Past Events/Experiences: notable stories or events the user mentions about themselves
-   - Relationships: (eg. people or places important to the user, like family, friends, hometown, etc. mentioned by the user)
-   - Key Facts: "Born in Seattle, 1990"
-   - Strong Preferences: "Prefers working in complete solitude before dawn" (this is a preference, not a fact)
-   - Beliefs/Values: "Believes technology should serve human connection, not replace it" (this is a belief, not a fact)
+Node Types to Extract - CREATE SEPARATE NODES FOR EACH ENTITY:
+
+FOR BOOK/ARTICLE CONTENT - Extract ALL entities as individual nodes:
+
+A. **Source Metadata Nodes** (if content is from a book/article):
+   - Book node: "The Count of Monte Cristo" (type: "Book", discipline: "Literature")
+   - Author node: "Alexandre Dumas" (type: "Author", discipline: "Literature")
+   - Genre nodes: "Adventure", "Historical Fiction" (type: "Genre", discipline: "Literature")
+   - Publication year can be stored in properties: {"publication_year": "1844"}
+
+B. **Character Nodes** (one node per significant character):
+   - Full name as node: "Edmond Dantès" (type: "Character", discipline: "Literature")
+   - Full name as node: "Danglars" (type: "Character", discipline: "Literature")
+   - Store traits in properties: {"role": "protagonist", "traits": "naive turned vengeful"}
+   - Relationships between characters will be created via GET_RELATIONSHIPS
+
+C. **Location Nodes** (if significant):
+   - "Marseilles", "Château d'If", "Paris" (type: "Location", discipline: "Geography")
+
+D. **Transferable Concept Nodes**:
+   - "Betrayal by trusted colleagues" (type: "Concept", discipline: "Psychology")
+   - "Professional jealousy" (type: "Concept", discipline: "Psychology")
+   - "Justice versus revenge" (type: "Concept", discipline: "Philosophy")
+   - "Hope sustains through suffering" (type: "Insight", discipline: "Philosophy")
+   - "Isolation transforms personality" (type: "Pattern", discipline: "Psychology")
+   - "Power corrupts" (type: "Principle", discipline: "Philosophy")
+
+E. **Symbol/Theme/Archetype Nodes**:
+   - "The wronged innocent" (type: "Archetype", discipline: "Literature")
+   - "The mentor figure" (type: "Archetype", discipline: "Literature")
+   - "Transformation through suffering" (type: "Theme", discipline: "Literature")
+
+F. **Event Nodes** (if culturally/historically significant):
+   - "Dantès' imprisonment" (type: "Event", discipline: "Literature")
+   - "The Trojan War" (type: "Event", discipline: "History")
+
+IMPORTANT: Create a NODE for each distinct entity. Relationships between them will be extracted separately.
+For example:
+- Node: "The Count of Monte Cristo"
+- Node: "Alexandre Dumas"
+- Node: "Edmond Dantès"
+- Node: "Adventure"
+- Node: "Betrayal by trusted colleagues"
+These will be connected via relationships like WRITTEN_BY, HAS_GENRE, FEATURES_CHARACTER, EXPLORES_THEME
+
+FOR PERSONAL USER DATA:
+   - Identity: (name, age, location, occupation, education, demographic)
+   - Memory: Personal experiences ("First time felt truly seen during college theater")
+   - Narrative: Current life stories ("Building AI products after leaving tech")
+   - Preference: Likes, dislikes, favorites ("Prefers working in solitude before dawn")
+   - Trait: Personality characteristics, habits, skills
+   - Goal: Stated objectives ("Training for marathon next spring")
+   - Relationship: Important people or places ("Has younger sister named Alice")
+   - Belief: Personal values ("Technology should serve human connection")
 
 Guidelines for Node Creation:
-   - Node names should be self-contained as a memory or narrative fragment (they should make sense without additional context)
-   - Keep factual nodes clear and precise
-   - Node types follow an open schema to accomodate human complexity, but recommended to keep them constrained to the types shared above. 
+   - **For books/content**: Prioritize TRANSFERABLE CONCEPTS over plot details. Include major characters/events only if culturally significant.
+   - **For user data**: Extract personal specifics that define the individual.
+   - Ask: "Can this node connect to knowledge from other sources?" If yes, it's well-abstracted.
+   - Characters/events qualify if they're references people use in conversation ("That's so Gatsby" or "Orwellian surveillance")
+   - Balance concrete (names, events) with abstract (concepts, patterns) for a rich knowledge graph
 
 Avoid:
-   - Creating multiple nodes for what could be a single coherent thought
-   - Overly generic nodes that don't capture unique aspects
-   - Splitting interconnected ideas that make more sense together
-   - Creating nodes that require external context to understand
+   - Moment-by-moment scene descriptions ("Dantès talks to the shipowner about delays")
+   - Minor side characters who don't transcend their story ("Caderousse's neighbor")
+   - Plot mechanics without deeper meaning ("Character X goes to location Y")
+   - Overly specific phrases that can't generalize ("Questioning shipowner's honesty about Elba delays")
 
-Example Response Format:
+Example Response Format for BOOK CONTENT (The Count of Monte Cristo):
 {
   "nodes": [
-    { 
-      "name": "Born in 1990 in Seattle", 
+    {
+      "name": "The Count of Monte Cristo",
+      "type": "Book",
+      "discipline": "Literature",
+      "bloom_level": "Remember",
+      "confidence": 1.0,
+      "properties": {"publication_year": "1844"}
+    },
+    {
+      "name": "Alexandre Dumas",
+      "type": "Author",
+      "discipline": "Literature",
+      "bloom_level": "Remember",
+      "confidence": 1.0
+    },
+    {
+      "name": "Adventure",
+      "type": "Genre",
+      "discipline": "Literature",
+      "bloom_level": "Remember",
+      "confidence": 1.0
+    },
+    {
+      "name": "Historical Fiction",
+      "type": "Genre",
+      "discipline": "Literature",
+      "bloom_level": "Remember",
+      "confidence": 1.0
+    },
+    {
+      "name": "Edmond Dantès",
+      "type": "Character",
+      "discipline": "Literature",
+      "bloom_level": "Remember",
+      "confidence": 1.0,
+      "properties": {"role": "protagonist", "traits": "naive turned vengeful"}
+    },
+    {
+      "name": "Danglars",
+      "type": "Character",
+      "discipline": "Literature",
+      "bloom_level": "Remember",
+      "confidence": 1.0,
+      "properties": {"role": "antagonist", "traits": "envious, greedy"}
+    },
+    {
+      "name": "Marseilles",
+      "type": "Location",
+      "discipline": "Geography",
+      "bloom_level": "Remember",
+      "confidence": 1.0
+    },
+    {
+      "name": "Betrayal by trusted colleagues",
+      "type": "Concept",
+      "discipline": "Psychology",
+      "bloom_level": "Understand",
+      "confidence": 0.95
+    },
+    {
+      "name": "Justice versus revenge",
+      "type": "Concept",
+      "discipline": "Philosophy",
+      "bloom_level": "Evaluate",
+      "confidence": 0.9
+    },
+    {
+      "name": "Isolation transforms personality",
+      "type": "Pattern",
+      "discipline": "Psychology",
+      "bloom_level": "Analyze",
+      "confidence": 0.85
+    }
+  ]
+}
+
+NOTE: Relationships will be created separately (e.g., "The Count of Monte Cristo" WRITTEN_BY "Alexandre Dumas", "Edmond Dantès" APPEARS_IN "The Count of Monte Cristo")
+
+Example Response Format for USER DATA:
+{
+  "nodes": [
+    {
+      "name": "Born in 1990 in Seattle",
       "type": "Identity",
       "discipline": "Personal History",
       "bloom_level": "Remember",
       "confidence": 1.0
     },
-    { 
-      "name": "Prefers working in complete solitude before dawn", 
+    {
+      "name": "Prefers working in solitude before dawn",
       "type": "Preference",
       "discipline": "Work Habits",
       "bloom_level": "Understand",
       "confidence": 0.9
     },
-    { 
-      "name": "Believes technology should serve human connection, not replace it", 
+    {
+      "name": "Technology should serve human connection",
       "type": "Belief",
       "discipline": "Philosophy",
       "bloom_level": "Evaluate",
       "confidence": 0.95
     },
-    { 
-      "name": "Training for a marathon next spring", 
+    {
+      "name": "Training for marathon next spring",
       "type": "Goal",
       "discipline": "Health",
       "bloom_level": "Apply",
-      "confidence": 1.0
-    },
-    { 
-      "name": "Burned out after overworking last year", 
-      "type": "Event",
-      "discipline": "Career",
-      "bloom_level": "Remember",
-      "confidence": 1.0
-    },
-    { 
-      "name": "Has a younger sister named Alice", 
-      "type": "Relationship",
-      "discipline": "Family",
-      "bloom_level": "Remember",
       "confidence": 1.0
     }
   ]
@@ -253,8 +368,17 @@ CRITICAL: You will receive a list of nodes with temporary IDs (Node1, Node2, etc
 Guidelines for Creating Relationships:
 
 1. Relationship Types to Consider:
-   
-   A. Semantic Relationships (Knowledge Structure):
+
+   A. Book/Content Metadata Relationships:
+      - WRITTEN_BY: Book/article written by author
+      - HAS_GENRE: Book/article belongs to genre
+      - FEATURES_CHARACTER: Book features character
+      - SET_IN: Story set in location
+      - EXPLORES_THEME: Book explores concept/theme
+      - APPEARS_IN: Character appears in book
+      - TAKES_PLACE_IN: Event occurs in location/time
+
+   B. Semantic Relationships (Knowledge Structure):
       - SIMILAR_TO: Concepts share similar properties or meanings
       - CONTRASTS_WITH: Concepts are opposites or contradictory
       - RELATED_TO: General semantic connection
