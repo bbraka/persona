@@ -1,12 +1,11 @@
+import json
 from persona.core.neo4j_database import Neo4jConnectionManager
 from persona.llm.embeddings import generate_embeddings
 from persona.models.schema import (
-    NodeModel, RelationshipModel, GraphUpdateModel, NodesAndRelationshipsResponse, 
-    CommunityStructure, Subgraph, Node, Relationship, GraphSchema
+    NodeModel, RelationshipModel, NodesAndRelationshipsResponse, 
+    CommunityStructure, Subgraph, Node
 )
-from typing import List, Dict, Any
-import asyncio
-import json
+from typing import List, Dict, Any, Optional
 from persona.llm.llm_graph import detect_communities
 from collections import defaultdict
 from server.logging_config import get_logger
@@ -14,7 +13,7 @@ from server.logging_config import get_logger
 logger = get_logger(__name__)
 
 class GraphOps:
-    def __init__(self, neo4j_manager: Neo4jConnectionManager = None):
+    def __init__(self, neo4j_manager: Optional[Neo4jConnectionManager] = None):
         """Initialize GraphOps with an optional Neo4j manager"""
         self.neo4j_manager = neo4j_manager if neo4j_manager is not None else Neo4jConnectionManager()
 
@@ -79,16 +78,17 @@ class GraphOps:
     async def get_node_data(self, node_name: str, user_id: str) -> NodeModel:
         if not await self.user_exists(user_id):
             logger.warning(f"User {user_id} does not exist. Cannot get node data.")
-            return NodeModel(name=node_name)
+            return NodeModel(name=node_name, type=None, embedding=None)
 
         node_data = await self.neo4j_manager.get_node_data(node_name, user_id)
         if node_data:
             return NodeModel(
                 name=node_data["name"],
                 type=node_data.get("type"),
-                properties=node_data.get("properties", {})
+                properties=node_data.get("properties", {}),
+                embedding=node_data.get("embedding")
             )
-        return NodeModel(name=node_name)
+        return NodeModel(name=node_name, type=None, embedding=None)
 
     async def get_node_relationships(self, node_name: str, user_id: str) -> List[RelationshipModel]:
         if not await self.user_exists(user_id):
@@ -99,7 +99,7 @@ class GraphOps:
         return [RelationshipModel(source=rel["source"], target=rel["target"], relation=rel["relation"]) 
                 for rel in relationships]
 
-    async def text_similarity_search(self, query: str, user_id: str, limit: int = 5, index_name: str = "embeddings_index") -> Dict[str, Any]:
+    async def text_similarity_search(self, query: str, user_id: str, limit: int = 5, threshold: float = 0.7, index_name: str = "embeddings_index") -> Dict[str, Any]:
         """
         Perform a similarity search on the graph based on a text query. 
         """
@@ -115,6 +115,8 @@ class GraphOps:
         logger.debug(f"Performing similarity search for the query: '{query}' for user ID: '{user_id}'")
         results = await self.neo4j_manager.query_text_similarity(query_embeddings[0], user_id)
 
+        # Filter by threshold
+        filtered = [r for r in results if r["score"] >= threshold]
         return {
             "query": query,
             "results": [
@@ -122,7 +124,7 @@ class GraphOps:
                     "nodeId": result["nodeId"],
                     "nodeName": result["nodeName"],
                     "score": result["score"]
-                } for result in results
+                } for result in filtered
             ]
         }
     
@@ -139,7 +141,95 @@ class GraphOps:
         if graph_update.relationships:
             await self.add_relationships(graph_update.relationships, user_id)
         if not graph_update.nodes and not graph_update.relationships:
-            logger.debug("No nodes or relationships to update.")        
+            logger.debug("No nodes or relationships to update.")
+
+    async def update_graph_with_bloom_transactional(
+        self,
+        graph_update: NodesAndRelationshipsResponse,
+        user_id: str
+    ) -> None:
+        """
+        Update graph with nodes, relationships, embeddings, and bloom levels in a single transaction.
+        If any step fails, all changes are rolled back for data consistency.
+        
+        Args:
+            graph_update: Contains nodes and relationships to add
+            user_id: User ID
+        """
+        if not await self.user_exists(user_id):
+            logger.warning(f"User {user_id} does not exist. Cannot update graph.")
+            return
+        
+        if not graph_update.nodes and not graph_update.relationships:
+            logger.debug("No nodes or relationships to update.")
+            return
+        
+        # Prepare data for transaction
+        nodes_data = []
+        embeddings_data = []
+        
+        # Process nodes and embeddings
+        for node in graph_update.nodes:
+            nodes_data.append({
+                "name": node.name,
+                "type": node.type or "",
+                "properties": node.properties or {}
+            })
+            
+            # Add embedding data
+            if node.embedding:
+                embeddings_data.append({
+                    "node_name": node.name,
+                    "embedding": node.embedding
+                })
+        
+        # Process relationships
+        relationships_data = [{
+            "source": rel.source,
+            "target": rel.target,
+            "relation": rel.relation
+        } for rel in graph_update.relationships]
+        
+        # Calculate bloom levels for all affected nodes
+        bloom_updates = []
+        affected_nodes = set([node.name for node in graph_update.nodes])
+        
+        # Get neighbors of new nodes to recalculate their bloom levels too
+        for node in graph_update.nodes:
+            try:
+                neighbors = await self.get_node_relationships(node.name, user_id)
+                affected_nodes.update([rel.target for rel in neighbors])
+                affected_nodes.update([rel.source for rel in neighbors])
+            except Exception as e:
+                logger.debug(f"Could not get neighbors for {node.name}: {e}")
+        
+        # Calculate bloom level for each affected node
+        for node_name in affected_nodes:
+            try:
+                bloom_level = await self.calculate_bloom_level(node_name, user_id)
+                
+                # Get existing properties
+                node_data = await self.get_node_data(node_name, user_id)
+                current_props = node_data.properties if node_data.properties else {}
+                
+                # Update with calculated bloom level
+                current_props['bloom_level'] = bloom_level
+                
+                bloom_updates.append({
+                    "node_name": node_name,
+                    "properties": current_props
+                })
+            except Exception as e:
+                logger.warning(f"Could not calculate bloom level for {node_name}: {e}")
+        
+        # Execute everything in a single transaction
+        await self.neo4j_manager.update_graph_transactional(
+            nodes=nodes_data,
+            relationships=relationships_data,
+            embeddings_data=embeddings_data,
+            bloom_updates=bloom_updates,
+            user_id=user_id
+        )        
 
     async def close(self):
         """Close the Neo4j connection"""
@@ -155,7 +245,8 @@ class GraphOps:
         return [NodeModel(
             name=node['name'],
             type=node.get('type'),
-            properties=node.get('properties', {})
+            properties=node.get('properties', {}),
+            embedding=node.get('embedding')
         ) for node in nodes]
 
     async def get_all_relationships(self, user_id: str) -> List[RelationshipModel]:
@@ -332,9 +423,70 @@ class GraphOps:
         
         # Create community structure in graph
         await self.make_communities(user_id, community_structure, subgraphs)
-
-
-
+        
+    async def calculate_bloom_level(self, node_name: str, user_id: str) -> str:
+            """Calculate Bloom's taxonomy level based on graph evidence using a single optimized query"""
+            await self.initialize()
+            
+            if not self.neo4j_manager.driver:
+                logger.error("Neo4j driver is not initialized.")
+                return "Remember"
+            
+            # Combined query: get degree and contexts in one call
+            query = """
+            MATCH (n:NodeName {name: $node_name, UserId: $user_id})
+            OPTIONAL MATCH (n)-[r]-()
+            WITH n, count(r) as degree
+            OPTIONAL MATCH (n)-[*1..2]-(connected)
+            WHERE connected.type IS NOT NULL
+            RETURN degree, collect(DISTINCT connected.type) as contexts
+            """
+            
+            async with self.neo4j_manager.driver.session() as session:
+                result = await session.run(query, node_name=node_name, user_id=user_id)
+                data = await result.data()
+                
+                if not data:
+                    return "Remember"
+                
+                record = data[0]
+                degree = record.get('degree', 0) or 0
+                contexts = [c for c in record.get('contexts', []) if c]
+                
+                # Evidence-based bloom level
+                if degree >= 6 and len(contexts) >= 3:
+                    return "Analyze"
+                elif degree >= 3 and len(contexts) >= 2:
+                    return "Apply"
+                elif degree >= 2:
+                    return "Understand"
+                else:
+                    return "Remember"
+    
+    async def update_node_properties(self, node_name: str, user_id: str, properties: Dict[str, Any]) -> None:
+        """Update properties of an existing node"""
+        if not await self.user_exists(user_id):
+            logger.warning(f"User {user_id} does not exist. Cannot update node properties.")
+            return
+        
+        await self.initialize()
+        
+        if not self.neo4j_manager.driver:
+            logger.error("Neo4j driver is not initialized.")
+            return
+        
+        query = """
+        MATCH (n:NodeName {name: $node_name, UserId: $user_id})
+        SET n.properties = $properties
+        RETURN n.name as name
+        """
+        async with self.neo4j_manager.driver.session() as session:
+            result = await session.run(query, node_name=node_name, user_id=user_id, properties=json.dumps(properties))
+            data = await result.data()
+            if data:
+                logger.debug(f"Updated properties for node: {node_name}")
+            else:
+                logger.warning(f"Node {node_name} not found for user {user_id}")
 
 class GraphContextRetriever:
     def __init__(self, graph_ops: GraphOps):
@@ -454,7 +606,7 @@ class GraphContextRetriever:
                 next_node = rel.target if rel.source == node_name else rel.source
                 await self._explore_node(next_node, subgraph, user_id, max_hops - 1)
 
-    async def get_entire_graph_context(self) -> str:
+    async def get_entire_graph_context(self, user_id: str) -> str:
         """
         Get graph context relative to the nodes, and user psyche.
         Currently gets the entire graph context, which is not efficient.
@@ -463,12 +615,12 @@ class GraphContextRetriever:
         # TODO: Use more efficient sophisticated context retrieval techniques like graph traversal, etc.
         # TODO: Use vector search to get the context for the nodes.
     
-        nodes = await self.graph_ops.get_all_nodes(self.user_id)
-        relationships = await self.graph_ops.get_all_relationships(self.user_id)
+        nodes = await self.graph_ops.get_all_nodes(user_id)
+        relationships = await self.graph_ops.get_all_relationships(user_id)
        
         context = "# Current Knowledge Graph\n\n## Nodes\n"
         for node in nodes:
-            context += f"- {node.name}: {node.perspective}\n"
+            context += f"- {node.name} (type: {node.type})\n"
         
         context += "\n## Relationships\n"
         for rel in relationships:
@@ -476,7 +628,10 @@ class GraphContextRetriever:
         
         return context
 
-    async def get_graph_context(self, query: str):
+    async def get_graph_context(self, query: str, user_id: str):
         logger.debug(f"Getting graph context for query: {query}")
-        results = await self.graph_ops.perform_similarity_search(query=query, user_id=self.user_id)
+        query_embeddings = generate_embeddings([query])
+        if not query_embeddings[0]:
+            return {"query": query, "results": []}
+        results = await self.graph_ops.perform_similarity_search(query=query, embedding=query_embeddings[0], user_id=user_id)
         return results

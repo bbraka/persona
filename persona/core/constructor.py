@@ -1,5 +1,5 @@
 from persona.core.graph_ops import GraphOps, GraphContextRetriever
-from persona.llm.llm_graph import get_nodes, get_relationships
+from persona.llm.llm_graph import get_nodes, get_relationships, Node as LLMNode
 from persona.llm.embeddings import generate_embeddings
 from persona.models.schema import (
     NodeModel, RelationshipModel, GraphUpdateModel,
@@ -24,9 +24,12 @@ class GraphConstructor:
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.graph_ops.__aexit__(exc_type, exc_val, exc_tb)
+        if self.graph_ops is not None:
+            await self.graph_ops.__aexit__(exc_type, exc_val, exc_tb)
 
     async def clean_graph(self):
+        if self.graph_ops is None:
+            raise RuntimeError("GraphConstructor must be used as an async context manager")
         await self.graph_ops.clean_graph()
 
     async def ingest_unstructured_data_to_graph(self, data: UnstructuredData):
@@ -37,6 +40,8 @@ class GraphConstructor:
         2. Finding strong, justified relationships between new nodes
         3. Selectively connecting with existing nodes only when truly relevant
         """
+        if self.graph_ops is None or self.graph_context_retriever is None:
+            raise RuntimeError("GraphConstructor must be used as an async context manager")
         text = self.preprocess_data(data)
         
         # Extract new nodes from the content
@@ -62,7 +67,11 @@ class GraphConstructor:
             relationships.extend(mixed_relationships)
         
         # Create the graph update - nodes with type information
-        nodes = [NodeModel(name=node.name, type=node.type) for node in new_nodes]
+        # Generate embeddings for each node
+        node_texts = [node.name for node in new_nodes]
+        embeddings = generate_embeddings(node_texts)
+        nodes = [NodeModel(name=node.name, type=node.type, embedding=embedding) 
+                 for node, embedding in zip(new_nodes, embeddings)]
         
         relationships = [RelationshipModel(
             source=rel.source,
@@ -75,9 +84,15 @@ class GraphConstructor:
             relationships=relationships
         )
         
-        # Update the graph
-        await self.graph_ops.update_graph(graph_update, self.user_id)
-
+        # Update the graph with transaction support (atomic: nodes + relationships + embeddings + bloom levels)
+        # If any step fails, all changes are rolled back
+        try:
+            await self.graph_ops.update_graph_with_bloom_transactional(graph_update, self.user_id)
+            logger.info(f"Successfully ingested {len(nodes)} nodes and {len(relationships)} relationships with bloom levels")
+        except Exception as e:
+            logger.error(f"Failed to ingest data (transaction rolled back): {e}")
+            raise
+            
     def preprocess_data(self, data: UnstructuredData) -> str:
         """
         Preprocess the data, combine relevant fields into a single string.
@@ -92,8 +107,9 @@ class GraphConstructor:
         Extract nodes from the unstructured text.
         """
         graph_context = await self.get_relevant_graph_context(user_id=self.user_id, nodes=[])
-        nodes_response = await get_nodes(text, graph_context)
-        return nodes_response
+        llm_nodes = await get_nodes(text, graph_context)
+        # Convert LLM nodes to schema nodes
+        return [Node(name=node.name, type=node.type, discipline=getattr(node, 'discipline', ''), bloom_level=getattr(node, 'bloom_level', ''), confidence=getattr(node, 'confidence', 0.0)) for node in llm_nodes]
 
     async def generate_relationships(self, nodes: List[Node], context_description: str = "") -> List[Relationship]:
         """
@@ -101,38 +117,51 @@ class GraphConstructor:
         Only creates relationships that are strongly justified.
         """
         graph_context = await self.get_relevant_graph_context(user_id=self.user_id, nodes=nodes)
-        relationships, _ = await get_relationships(nodes, graph_context)  # Ignore the ID mapping
-        return relationships
+        # Convert schema nodes to LLM nodes
+        llm_nodes = [LLMNode(name=node.name, type=node.type) for node in nodes]
+        llm_relationships, _ = await get_relationships(llm_nodes, graph_context)  # Ignore the ID mapping
+        # Convert LLM relationships to schema relationships
+        return [Relationship(source=rel.source, target=rel.target, relation=rel.relation) for rel in llm_relationships]
 
     async def generate_cross_relationships(self, new_nodes: List[Node], existing_context: str) -> List[Relationship]:
         """
         Generate relationships between new and existing nodes.
         Only creates relationships when there's a strong, meaningful connection.
         """
-        relationships, _ = await get_relationships(new_nodes, existing_context)  # Ignore the ID mapping
-        return relationships
+        # Convert schema nodes to LLM nodes
+        llm_nodes = [LLMNode(name=node.name, type=node.type) for node in new_nodes]
+        llm_relationships, _ = await get_relationships(llm_nodes, existing_context)  # Ignore the ID mapping
+        # Convert LLM relationships to schema relationships
+        return [Relationship(source=rel.source, target=rel.target, relation=rel.relation) for rel in llm_relationships]
 
     async def discover_new_relationships(self, new_context: str, existing_context: str) -> List[Relationship]:
         """
         Discover potential new relationships between existing nodes based on new context.
         """
+        if self.graph_ops is None:
+            raise RuntimeError("GraphConstructor must be used as an async context manager")
+        
         # Extract existing nodes from the context
         existing_nodes = await self.graph_ops.get_all_nodes(self.user_id)
         if not existing_nodes:
             return []
             
         # Convert NodeModel instances to Node instances for the LLM
-        nodes_for_llm = [Node(name=node.name, type="Unknown") for node in existing_nodes]  # Add required type field
+        nodes_for_llm = [LLMNode(name=node.name, type="Unknown") for node in existing_nodes]  # Add required type field
         
         # Use the new context to find new relationships
         combined_context = f"New Information:\n{new_context}\n\nExisting Knowledge:\n{existing_context}"
-        relationships, _ = await get_relationships(nodes_for_llm, combined_context)  # Ignore the ID mapping
-        return relationships
+        llm_relationships, _ = await get_relationships(nodes_for_llm, combined_context)  # Ignore the ID mapping
+        
+        # Convert LLM relationships to schema relationships
+        return [Relationship(source=rel.source, target=rel.target, relation=rel.relation) for rel in llm_relationships]
 
     async def get_relevant_graph_context(self, user_id: str, nodes: List[Node], max_hops: int = 2) -> str:
         """
         Get relevant subgraph context for the given nodes.
         """
+        if self.graph_context_retriever is None:
+            raise RuntimeError("GraphConstructor must be used as an async context manager")
         return await self.graph_context_retriever.get_relevant_graph_context(nodes=nodes, user_id=user_id, max_hops=max_hops)
 
     async def close(self):

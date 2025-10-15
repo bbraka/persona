@@ -36,9 +36,9 @@ def get_version():
 
 @router.post("/users/{user_id}")
 async def create_user(
+    response: Response,
     user_id: str = Path(..., description="The unique identifier for the user"),
-    graph_ops: GraphOps = Depends(get_graph_ops),
-    response: Response = None
+    graph_ops: GraphOps = Depends(get_graph_ops)
 ):
     try:
         if not is_valid_user_id(user_id):
@@ -129,7 +129,7 @@ async def ingest_data(
 @router.post("/users/{user_id}/rag/query", response_model=RAGResponse)
 async def rag_query(
     user_id: str = Path(..., description="The unique identifier for the user"),
-    query: RAGQuery = None,
+    query: RAGQuery = Body(...),
     graph_ops: GraphOps = Depends(get_graph_ops)
 ):
     try:
@@ -168,7 +168,7 @@ async def rag_query(
 @router.post("/users/{user_id}/rag/query-vector", status_code=status.HTTP_200_OK)
 async def rag_query_vector(
     user_id: str = Path(..., description="The unique identifier for the user"),
-    query: RAGQuery = None,
+    query: RAGQuery = Body(...),
     graph_ops: GraphOps = Depends(get_graph_ops)
 ):
     try:
@@ -203,7 +203,7 @@ async def rag_query_vector(
 @router.post("/users/{user_id}/ask", response_model=AskResponse, status_code=status.HTTP_200_OK)
 async def ask_insights(
     user_id: str = Path(..., description="The unique identifier for the user"),
-    ask_request: AskRequest = None,
+    ask_request: AskRequest = Body(...),
     graph_ops: GraphOps = Depends(get_graph_ops)
 ):
     try:
@@ -241,7 +241,7 @@ async def ask_insights(
 @router.post("/users/{user_id}/custom-data", status_code=status.HTTP_200_OK)
 async def update_custom_data(
     user_id: str = Path(..., description="The unique identifier for the user"),
-    update: CustomGraphUpdate = None,
+    update: CustomGraphUpdate = Body(...),
     graph_ops: GraphOps = Depends(get_graph_ops)
 ):
     """

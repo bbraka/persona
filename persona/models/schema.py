@@ -13,6 +13,9 @@ class UnstructuredData(BaseModel):
 class Node(BaseModel):
     name: str = Field(..., description="The node content - can be a simple label (e.g., 'Techno Music') or a narrative fragment (e.g., 'Deeply moved by classical music in empty spaces')")
     type: str = Field(..., description="The type/category of the node (e.g., 'Identity', 'Belief', 'Preference', 'Goal', 'Event', 'Relationship', etc.)")
+    discipline: Optional[str] = Field(None, description="The discipline/category of the node (e.g., 'Music', 'Art', 'Technology', etc.)")
+    bloom_level: Optional[str] = Field(None, description="The cognitive level of the node based on Bloom's taxonomy (e.g., 'Remember', 'Understand', 'Apply', 'Analyze', 'Evaluate', 'Create')")
+    confidence: Optional[float] = Field(None, description="Confidence score for the node extraction (0.0 to 1.0)")
 
 class Relationship(BaseModel):
     source: str
@@ -71,22 +74,32 @@ class GraphUpdateModel(BaseModel):
 
 
 class EntityExtractionResponse(BaseModel):
-    entities: List[str] = Field(..., example=["Blockchain", "Quantum Computing", "Indie Games", "Sustainable Farming", "Virtual Reality"])
+    entities: List[str] = Field(..., examples=[["Blockchain", "Quantum Computing", "Indie Games", "Sustainable Farming", "Virtual Reality"]])
 
 
 class NodesAndRelationshipsResponse(BaseModel):
-    nodes: List[NodeModel] = Field(..., example=[
-        {"name": "Finds peace in early morning solitude"},
-        {"name": "Techno Music"},
-        {"name": "Values deep conversations"},
-        {"name": "Real Madrid"},
-        {"name": "Anxious about future of AI"}
-    ])
-    relationships: List[RelationshipModel] = Field(..., example=[
-        {"source": "Finds peace in early morning solitude", "relation": "CONTRASTS_WITH", "target": "Anxious about future of AI"},
-        {"source": "Techno Music", "relation": "ENHANCES", "target": "Finds peace in early morning solitude"},
-        {"source": "Values deep conversations", "relation": "REFLECTS", "target": "Anxious about future of AI"}
-    ])
+    nodes: List[NodeModel] = Field(
+        ...,
+        json_schema_extra={
+            "examples": [[
+                {"name": "Finds peace in early morning solitude"},
+                {"name": "Techno Music"},
+                {"name": "Values deep conversations"},
+                {"name": "Real Madrid"},
+                {"name": "Anxious about future of AI"}
+            ]]
+        }
+    )
+    relationships: List[RelationshipModel] = Field(
+        ...,
+        json_schema_extra={
+            "examples": [[
+                {"source": "Finds peace in early morning solitude", "relation": "CONTRASTS_WITH", "target": "Anxious about future of AI"},
+                {"source": "Techno Music", "relation": "ENHANCES", "target": "Finds peace in early morning solitude"},
+                {"source": "Values deep conversations", "relation": "REFLECTS", "target": "Anxious about future of AI"}
+            ]]
+        }
+    )
 
 class UserCreate(BaseModel):
     user_id: str

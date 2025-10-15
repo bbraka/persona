@@ -1,5 +1,5 @@
-from typing import List, Dict, Any, Union, Tuple
-from neo4j import AsyncGraphDatabase, basic_auth
+from typing import List, Dict, Any, Union, Tuple, Optional
+from neo4j import AsyncGraphDatabase, basic_auth, AsyncDriver
 import asyncio
 import time
 from persona.llm.embeddings import generate_embeddings
@@ -15,7 +15,7 @@ class Neo4jConnectionManager:
         self.uri = config.NEO4J.URI
         self.username = config.NEO4J.USER
         self.password = config.NEO4J.PASSWORD
-        self.driver = None
+        self.driver: Optional[AsyncDriver] = None
         self.ensure_vector_index_task = None
 
     async def initialize(self):
@@ -39,10 +39,11 @@ class Neo4jConnectionManager:
             try:
                 if not self.driver:
                     await self.connect()
-                async with self.driver.session() as session:
-                    await session.run("RETURN 1")
-                    logger.info("Neo4j is ready.")
-                    return
+                if self.driver:
+                    async with self._ensure_driver().session() as session:
+                        await session.run("RETURN 1")
+                        logger.info("Neo4j is ready.")
+                        return
             except Exception as e:
                 logger.debug(f"Waiting for Neo4j... {str(e)}")
                 elapsed_time = time.time() - start_time
@@ -56,9 +57,15 @@ class Neo4jConnectionManager:
             await self.driver.close()
             self.driver = None
 
+    def _ensure_driver(self) -> AsyncDriver:
+        """Ensure driver is initialized and return it"""
+        if self.driver is None:
+            raise RuntimeError("Neo4j driver not initialized. Call initialize() first.")
+        return self.driver
+
     async def clean_graph(self) -> None:
         # Delete all nodes and relationships
-        async with self.driver.session() as session:
+        async with self._ensure_driver().session() as session:
             await session.run("MATCH (n) DETACH DELETE n")
 
         # Drop the vector index
@@ -69,15 +76,15 @@ class Neo4jConnectionManager:
         MATCH (n {name: $node_name, NodeType: $node_type, UserId: $user_id})
         RETURN n.name AS NodeName
         """
-        async with self.driver.session() as session:
+        async with self._ensure_driver().session() as session:
             result = await session.run(query, node_name=node_name, node_type=node_type, user_id=user_id)
             return result.single() is not None
 
     async def drop_vector_index(self, index_name: str) -> None:
         if await self.index_exists(index_name):
-            query = f"DROP INDEX `{index_name}`"
-            async with self.driver.session() as session:
-                await session.run(query)
+            query = "DROP INDEX $index_name"
+            async with self._ensure_driver().session() as session:
+                await session.run(query, index_name=index_name)
             logger.info(f"Vector index '{index_name}' dropped.")
         else:
             logger.debug(f"Vector index '{index_name}' does not exist. Skipping drop operation.")
@@ -86,16 +93,12 @@ class Neo4jConnectionManager:
         if not await self.user_exists(user_id):
             logger.warning(f"User {user_id} does not exist. Cannot create nodes.")
             return
-        async with self.driver.session() as session:
-            for node in nodes:
-                # Add the node type as a secondary label if provided
-                node_type = node.get("type", "").replace(" ", "").replace("/", "")  # Clean the type for label usage
-                labels = "NodeName"
-                if node_type:
-                    labels = f"NodeName:{node_type}"
-                
+        async with self._ensure_driver().session() as session:
+            for node in nodes:                
+                # Use parameterized query with APOC or dynamic labels via CASE
+                # For simplicity, just use NodeName label and store type as property
                 query = (
-                    f"MERGE (n:{labels} {{name: $name, UserId: $user_id}}) "
+                    "MERGE (n:NodeName {name: $name, UserId: $user_id}) "
                     "SET n.type = $type, n.properties = $properties"
                 )
                 properties = json.dumps(node.get("properties", {}))  # Serialize properties to JSON string
@@ -110,7 +113,7 @@ class Neo4jConnectionManager:
         if not await self.user_exists(user_id):
             logger.warning(f"User {user_id} does not exist. Cannot create relationships.")
             return
-        async with self.driver.session() as session:
+        async with self._ensure_driver().session() as session:
             for relationship in relationships:
                 await self._create_relationship(session, relationship, user_id)
 
@@ -130,20 +133,116 @@ class Neo4jConnectionManager:
 
         await session.run(query, params)
 
+    async def update_graph_transactional(
+        self,
+        nodes: List[Dict[str, Any]],
+        relationships: List[Dict[str, Any]],
+        embeddings_data: List[Dict[str, Any]],
+        bloom_updates: List[Dict[str, Any]],
+        user_id: str
+    ) -> None:
+        """
+        Execute entire graph update in a single transaction for atomicity.
+        If any step fails, all changes are rolled back.
+        
+        Args:
+            nodes: List of node dicts with 'name', 'type', 'properties'
+            relationships: List of relationship dicts with 'source', 'target', 'relation'
+            embeddings_data: List of dicts with 'node_name' and 'embedding'
+            bloom_updates: List of dicts with 'node_name' and 'properties' (including bloom_level)
+            user_id: User ID
+        """
+        if not await self.user_exists(user_id):
+            logger.warning(f"User {user_id} does not exist. Cannot update graph.")
+            return
+        
+        async with self._ensure_driver().session() as session:
+            tx = await session.begin_transaction()
+            try:
+                # Step 1: Create/update nodes
+                # Step 1: Create/update nodes
+                for node in nodes:
+                    # Use parameterized query without dynamic labels
+                    query = (
+                        "MERGE (n:NodeName {name: $name, UserId: $user_id}) "
+                        "SET n.type = $type, n.properties = $properties"
+                    )
+                    properties = json.dumps(node.get("properties", {}))
+                    await tx.run(query, {
+                        "name": node["name"],
+                        "user_id": user_id,
+                        "type": node.get("type", ""),
+                        "properties": properties
+                    })
+                    logger.debug(f"Transaction: Created/updated node {node['name']}")
+                # Step 2: Create relationships
+                for relationship in relationships:
+                    query = (
+                        "MATCH (source {UserId: $user_id}), (target {UserId: $user_id}) "
+                        "WHERE source.name = $source AND target.name = $target "
+                        "MERGE (source)-[r:`{relation}`]->(target) "
+                        "SET r.value = $relation"
+                    )
+                    await tx.run(query, {
+                        "source": relationship["source"],
+                        "target": relationship["target"],
+                        "relation": relationship["relation"],
+                        "user_id": user_id
+                    })
+                    logger.debug(f"Transaction: Created relationship {relationship['source']} -> {relationship['target']}")
+                
+                # Step 3: Add embeddings (using the official Neo4j procedure)
+                for emb_data in embeddings_data:
+                    query = """
+                    MATCH (n {name: $node_name, UserId: $user_id})
+                    CALL db.create.setNodeVectorProperty(n, 'embedding', $embedding)
+                    """
+                    await tx.run(query, {
+                        "node_name": emb_data["node_name"],
+                        "embedding": emb_data["embedding"],
+                        "user_id": user_id
+                    })
+                    logger.debug(f"Transaction: Added embedding for {emb_data['node_name']}")
+                
+                # Step 4: Update bloom levels and properties
+                for bloom_data in bloom_updates:
+                    query = """
+                    MATCH (n:NodeName {name: $node_name, UserId: $user_id})
+                    SET n.properties = $properties
+                    """
+                    properties = json.dumps(bloom_data["properties"])
+                    await tx.run(query, {
+                        "node_name": bloom_data["node_name"],
+                        "properties": properties,
+                        "user_id": user_id
+                    })
+                    logger.debug(f"Transaction: Updated bloom level for {bloom_data['node_name']}")
+                
+                # Commit all changes atomically
+                await tx.commit()
+                logger.info(f"Transaction committed: {len(nodes)} nodes, {len(relationships)} rels, {len(bloom_updates)} bloom updates")
+                
+            except Exception as e:
+                await tx.rollback()
+                logger.error(f"Transaction failed, rolling back all changes: {e}")
+                raise
+            finally:
+                await tx.close()
+
     async def create_vector_index(self, index_name: str) -> None:
         # Check if the index already exists
         existing_indexes_query = "SHOW VECTOR INDEXES"
-        async with self.driver.session() as session:
+        async with self._ensure_driver().session() as session:
             existing_indexes = await session.run(existing_indexes_query)
             index_exists = any(index['name'] == index_name for index in await existing_indexes.data())
     
         if not index_exists:
-            query = f"""
-            CREATE VECTOR INDEX `{index_name}`
+            query = """
+            CREATE VECTOR INDEX `embeddings_index`
             FOR (n:NodeName) ON (n.embedding)
-            OPTIONS {{indexConfig: {{`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}}}
+            OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}
             """
-            async with self.driver.session() as session:
+            async with self._ensure_driver().session() as session:
                 await session.run(query)
             logger.info(f"Vector index '{index_name}' created.")
         else:
@@ -159,17 +258,17 @@ class Neo4jConnectionManager:
         MATCH (n {name: $node_name, UserId: $user_id})
         CALL db.create.setNodeVectorProperty(n, 'embedding', $embedding)
         """
-        async with self.driver.session() as session:
+        async with self._ensure_driver().session() as session:
             await session.run(query, node_name=node_name, embedding=embedding, user_id=user_id)
 
     async def index_exists(self, index_name: str) -> bool:
-        async with self.driver.session() as session:
+        async with self._ensure_driver().session() as session:
             existing_indexes = await session.run("SHOW VECTOR INDEXES")
             index_exists = any(index['name'] == index_name for index in await existing_indexes.data())
             return index_exists
 
     async def ensure_vector_index(self) -> None:
-        async with self.driver.session() as session:
+        async with self._ensure_driver().session() as session:
             # Check if the index exists
             result = await session.run("SHOW VECTOR INDEXES")
             indexes = await result.data()
@@ -217,7 +316,7 @@ class Neo4jConnectionManager:
         ORDER BY score DESC
         """
         results = []
-        async with self.driver.session() as session:
+        async with self._ensure_driver().session() as session:
             tx = await session.begin_transaction()
             try:
                 result = await tx.run(query, indexName=index_name, embedding=keyword_embedding, user_id=user_id)
@@ -244,7 +343,7 @@ class Neo4jConnectionManager:
             logger.error(f"Invalid embedding format for node {node_name}. Embedding must be a list of floats.")
             return
 
-        async with self.driver.session() as session:
+        async with self._ensure_driver().session() as session:
             success_flag = await self._set_node_embedding(session=session, embedding=embedding, node_name=node_name, user_id=user_id)
 
     async def _set_node_embedding(self, session, embedding: List[float], node_name: str, user_id: str) -> bool:
@@ -262,12 +361,12 @@ class Neo4jConnectionManager:
     def _validate_embedding(embedding: List[float]) -> bool:
         return isinstance(embedding, list) and all(isinstance(item, float) for item in embedding)
 
-    async def get_node_data(self, node_name: str, user_id: str) -> Dict[str, Any]:
+    async def get_node_data(self, node_name: str, user_id: str) -> Optional[Dict[str, Any]]:
         query = """
         MATCH (n:NodeName {name: $node_name, UserId: $user_id})
         RETURN n.name AS name, n.type AS type, n.properties AS properties
         """
-        async with self.driver.session() as session:
+        async with self._ensure_driver().session() as session:
             result = await session.run(query, node_name=node_name, user_id=user_id)
             record = await result.single()
             if record:
@@ -284,7 +383,7 @@ class Neo4jConnectionManager:
         RETURN type(r) AS relation, m.name AS related_node, r.value AS value,
                CASE WHEN startNode(r) = n THEN 'outgoing' ELSE 'incoming' END AS direction
         """
-        async with self.driver.session() as session:
+        async with self._ensure_driver().session() as session:
             result = await session.run(query, node_name=node_name, user_id=user_id)
             return [
                 {
@@ -301,7 +400,7 @@ class Neo4jConnectionManager:
         MATCH (n:NodeName {UserId: $user_id})
         RETURN n.name AS name, n.type AS type, n.properties AS properties
         """
-        async with self.driver.session() as session:
+        async with self._ensure_driver().session() as session:
             result = await session.run(query, user_id=user_id)
             data = await result.data()
             # Parse the properties JSON string back to dict
@@ -317,7 +416,7 @@ class Neo4jConnectionManager:
         MATCH (source:NodeName {UserId: $user_id})-[r]->(target:NodeName {UserId: $user_id})
         RETURN source.name AS source, type(r) AS relation, target.name AS target
         """
-        async with self.driver.session() as session:
+        async with self._ensure_driver().session() as session:
             result = await session.run(query, user_id=user_id)
             return await result.data()
 
@@ -326,7 +425,7 @@ class Neo4jConnectionManager:
         MERGE (u:User {id: $user_id})
         """
         logger.debug(f"Creating user {user_id} with URI: {self.uri}")
-        async with self.driver.session() as session:
+        async with self._ensure_driver().session() as session:
             await session.run(query, user_id=user_id)
         logger.info(f"User {user_id} created successfully.")
 
@@ -335,10 +434,10 @@ class Neo4jConnectionManager:
         MATCH (u:User {id: $user_id})
         RETURN COUNT(u) > 0 AS exists
         """
-        async with self.driver.session() as session:
+        async with self._ensure_driver().session() as session:
             result = await session.run(query, user_id=user_id)
             record = await result.single()
-            return record and record['exists']
+            return bool(record['exists']) if record else False
 
     async def delete_user(self, user_id: str) -> None:
         # First delete all nodes associated with the user
@@ -351,7 +450,7 @@ class Neo4jConnectionManager:
         MATCH (u:User {id: $user_id})
         DELETE u
         """
-        async with self.driver.session() as session:
+        async with self._ensure_driver().session() as session:
             await session.run(query1, user_id=user_id)
             await session.run(query2, user_id=user_id)
         logger.info(f"User {user_id} and all associated nodes deleted successfully.")

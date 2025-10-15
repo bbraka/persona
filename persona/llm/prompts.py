@@ -152,7 +152,9 @@ Principles for Node Extraction:
 INCLUDE exactly these fields per node:
 - name: Short, unique handle (5-20 words) suitable for embedding, and representative of a cognitive fragment. 
 - type: One of: Identity · Memory · Preference · Trait · Narrative · Goal · Event · State · Relationship · Belief · Other types shared below. 
-
+- discipline: (optional) e.g. "psychology", "career", "hobby", "relationship", "health", etc.
+- bloom_level: (optional) cognitive level based on Bloom's taxonomy (e.g. Remember, Understand, Apply, Analyze, Evaluate, Create)
+- confidence: (optional) confidence score for the node extraction (0.0 to 1.0)
 
 Node Types to Extract, with some examples and elaborations:
    - Identity: (name, age, location, occupation, education, demographic etc.)
@@ -201,12 +203,47 @@ CRITICAL: You will receive a list of nodes with temporary IDs (Node1, Node2, etc
 Guidelines for Creating Relationships:
 
 1. Relationship Types to Consider:
-   - Causal: LEADS_TO, RESULTS_IN (when one thing clearly causes another)
-   - Evolutionary: EVOLVES_INTO, TRANSFORMS_TO (for personal growth/changes)
-   - Emotional: RESONATES_WITH, CONFLICTS_WITH (for emotional connections)
-   - Influential: SHAPES, INSPIRES (for impact relationships)
-   - Factual: LOCATED_IN, PART_OF (for concrete connections)
-   - Temporal: PRECEDES, FOLLOWS (for time-based relationships)
+   
+   A. Semantic Relationships (Knowledge Structure):
+      - SIMILAR_TO: Concepts share similar properties or meanings
+      - CONTRASTS_WITH: Concepts are opposites or contradictory
+      - RELATED_TO: General semantic connection
+      - EXTENDS: One concept extends or builds upon another
+      - SPECIALIZES: More specific instance of a general concept
+   
+   B. Hierarchical Relationships:
+      - PARENT_OF / CHILD_OF: Hierarchical or categorical relationship
+      - PART_OF / CONTAINS: Composition relationships
+      - SUBTOPIC_OF: Knowledge hierarchy
+   
+   C. Argumentative Relationships:
+      - SUPPORTS: One concept provides evidence/support for another
+      - OPPOSES / ARGUES_AGAINST: One concept contradicts or opposes another
+      - EVIDENCES: Provides evidence for a claim
+      - REFUTES: Disproves or contradicts
+   
+   D. Causal Relationships:
+      - LEADS_TO / CAUSES: Direct causation
+      - RESULTS_IN: Outcome or consequence
+      - ENABLES: Makes something possible
+      - PREVENTS: Stops or blocks something
+   
+   E. Temporal Relationships:
+      - PRECEDES / FOLLOWS: Time-based sequence
+      - HAPPENS_BEFORE / HAPPENS_AFTER: Event ordering
+   
+   F. Influence & Impact:
+      - SHAPES / INFLUENCES: One affects the other
+      - INSPIRES: Motivational or creative influence
+      - MOTIVATES: Drives action or decision
+      - ENHANCES: Improves or amplifies
+      - WEAKENS: Diminishes or reduces
+   
+   G. Cognitive & Personal:
+      - RESONATES_WITH: Emotional or intellectual alignment
+      - CONFLICTS_WITH: Internal tension or contradiction
+      - EVOLVES_INTO / TRANSFORMS_TO: Personal growth or change
+      - APPLIES_TO: Practical application context
 
 2. Principles for Relationship Creation:
    - Only create relationships that are strongly justified

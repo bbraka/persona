@@ -60,24 +60,39 @@ class GraphUpdateModel(BaseModel):
 
 
 class EntityExtractionResponse(BaseModel):
-    entities: List[str] = Field(..., example=["Blockchain", "Quantum Computing", "Indie Games", "Sustainable Farming", "Virtual Reality"])
+    entities: List[str] = Field(
+        ...,
+        json_schema_extra={
+            "examples": [["Blockchain", "Quantum Computing", "Indie Games", "Sustainable Farming", "Virtual Reality"]]
+        }
+    )
 
 
 class NodesAndRelationshipsResponse(BaseModel):
-    nodes: List[NodeModel] = Field(..., example=[
-        {"id": "Blockchain", "label": "Technology"},
-        {"id": "Quantum Computing", "label": "Science"},
-        {"id": "Indie Games", "label": "Entertainment"},
-        {"id": "Sustainable Farming", "label": "Agriculture"},
-        {"id": "Virtual Reality", "label": "Technology"}
-    ])
-    relationships: List[RelationshipModel] = Field(..., example=[
-        {"source": "Technology", "relation": "includes", "target": "Blockchain"},
-        {"source": "Science", "relation": "includes", "target": "Quantum Computing"},
-        {"source": "Entertainment", "relation": "includes", "target": "Indie Games"},
-        {"source": "Agriculture", "relation": "includes", "target": "Sustainable Farming"},
-        {"source": "Technology", "relation": "includes", "target": "Virtual Reality"}
-    ])
+    nodes: List[NodeModel] = Field(
+        ...,
+        json_schema_extra={
+            "examples": [[
+                {"id": "Blockchain", "label": "Technology"},
+                {"id": "Quantum Computing", "label": "Science"},
+                {"id": "Indie Games", "label": "Entertainment"},
+                {"id": "Sustainable Farming", "label": "Agriculture"},
+                {"id": "Virtual Reality", "label": "Technology"}
+            ]]
+        }
+    )
+    relationships: List[RelationshipModel] = Field(
+        ...,
+        json_schema_extra={
+            "examples": [[
+                {"source": "Technology", "relation": "includes", "target": "Blockchain"},
+                {"source": "Science", "relation": "includes", "target": "Quantum Computing"},
+                {"source": "Entertainment", "relation": "includes", "target": "Indie Games"},
+                {"source": "Agriculture", "relation": "includes", "target": "Sustainable Farming"},
+                {"source": "Technology", "relation": "includes", "target": "Virtual Reality"}
+            ]]
+        }
+    )
 
 class UserCreate(BaseModel):
     user_id: str

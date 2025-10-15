@@ -128,21 +128,11 @@ class TestLLME2EAzure:
 class TestLLME2EMocked:
     """End-to-end tests with mocked LLM calls (for CI/CD)"""
     
-    @patch('persona.llm.client_factory.config')
     @pytest.mark.asyncio
-    async def test_node_extraction_json_parsing(self, mock_config):
+    async def test_node_extraction_json_parsing(self):
         """Test that our JSON parsing works correctly with mocked responses"""
-        from persona.llm.client_factory import get_chat_client, reset_clients
         from persona.llm.providers.base import ChatResponse
         from unittest.mock import AsyncMock
-        
-        # Configure for OpenAI with fake key
-        mock_config.MACHINE_LEARNING.LLM_SERVICE = "openai/gpt-4o-mini"
-        mock_config.MACHINE_LEARNING.OPENAI_API_KEY = "fake-key"
-        mock_config.MACHINE_LEARNING.OPENAI_CHAT_MODEL = "gpt-4o-mini"
-        mock_config.MACHINE_LEARNING.OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
-        
-        reset_clients()  # Reset to use new config
         
         # Mock the client to return a JSON response
         mock_client = AsyncMock()
@@ -151,7 +141,7 @@ class TestLLME2EMocked:
             model="mock-model"
         )
         
-        with patch('persona.llm.client_factory.get_chat_client', return_value=mock_client):
+        with patch('persona.llm.llm_graph.get_chat_client', return_value=mock_client):
             nodes = await get_nodes("Test text", "Test context")
             
             assert len(nodes) == 2
@@ -160,22 +150,12 @@ class TestLLME2EMocked:
             assert nodes[1].name == "Another Node"
             assert nodes[1].type == "Interest"
     
-    @patch('persona.llm.client_factory.config')
     @pytest.mark.asyncio
-    async def test_relationship_generation_json_parsing(self, mock_config):
+    async def test_relationship_generation_json_parsing(self):
         """Test that relationship JSON parsing works correctly"""
-        from persona.llm.client_factory import get_chat_client, reset_clients
         from persona.llm.providers.base import ChatResponse
         from persona.llm.llm_graph import Node
         from unittest.mock import AsyncMock
-        
-        # Configure for OpenAI with fake key
-        mock_config.MACHINE_LEARNING.LLM_SERVICE = "openai/gpt-4o-mini"
-        mock_config.MACHINE_LEARNING.OPENAI_API_KEY = "fake-key"
-        mock_config.MACHINE_LEARNING.OPENAI_CHAT_MODEL = "gpt-4o-mini"
-        mock_config.MACHINE_LEARNING.OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
-        
-        reset_clients()  # Reset to use new config
         
         # Mock the client to return a JSON response
         mock_client = AsyncMock()
@@ -189,14 +169,12 @@ class TestLLME2EMocked:
             Node(name="Second Node", type="Test")
         ]
         
-        with patch('persona.llm.client_factory.get_chat_client', return_value=mock_client):
+        with patch('persona.llm.llm_graph.get_chat_client', return_value=mock_client):
             relationships, id_mapping = await get_relationships(nodes, "Test context")
             
             assert len(relationships) == 1
             assert relationships[0].source == "First Node"
             assert relationships[0].relation == "RELATES_TO"
             assert relationships[0].target == "Second Node"
-            
-            # Verify ID mapping
             assert id_mapping["Node1"] == "First Node"
             assert id_mapping["Node2"] == "Second Node" 

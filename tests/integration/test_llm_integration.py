@@ -140,6 +140,7 @@ class TestProviderSwitching:
         """Test that embedding client falls back to OpenAI when provider doesn't support embeddings"""
         # Configure for Anthropic (which doesn't support embeddings)
         mock_config.MACHINE_LEARNING.LLM_SERVICE = "anthropic/claude-3-5-sonnet-20241022"
+        mock_config.MACHINE_LEARNING.EMBEDDING_SERVICE = "openai/text-embedding-3-small"
         mock_config.MACHINE_LEARNING.ANTHROPIC_API_KEY = "test-key"
         mock_config.MACHINE_LEARNING.ANTHROPIC_CHAT_MODEL = "claude-3-5-sonnet-20241022"
         mock_config.MACHINE_LEARNING.OPENAI_API_KEY = "test-openai-key"

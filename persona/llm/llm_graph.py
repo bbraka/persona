@@ -1,5 +1,5 @@
 import json
-from typing import List, Tuple, Dict, Any
+from typing import List, Optional, Tuple, Dict, Any
 from persona.llm.prompts import GET_NODES, GET_RELATIONSHIPS, GENERATE_COMMUNITIES, GENERATE_STRUCTURED_INSIGHTS
 from persona.models.schema import EntityExtractionResponse, NodesAndRelationshipsResponse, CommunityStructure, AskResponse, AskRequest, create_dynamic_schema
 from pydantic import BaseModel, Field
@@ -13,6 +13,7 @@ logger = get_logger(__name__)
 class Node(BaseModel):
     name: str = Field(..., description="The node content - can be a simple label (e.g., 'Techno Music') or a narrative fragment (e.g., 'Deeply moved by classical music in empty spaces')")
     type: str = Field(..., description="The type/category of the node (e.g., 'Identity', 'Belief', 'Preference', 'Goal', 'Event', 'Relationship', etc.)")
+    properties: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional properties of the node (e.g., 'discipline', 'bloom_level', 'confidence', etc.)")
 
 class Relationship(BaseModel):
     source: str
