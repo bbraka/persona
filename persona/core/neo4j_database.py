@@ -94,10 +94,12 @@ class Neo4jConnectionManager:
             logger.warning(f"User {user_id} does not exist. Cannot create nodes.")
             return
         async with self._ensure_driver().session() as session:
-            for node in nodes:                
+            for node in nodes:
                 # Store PKG properties as individual fields, not nested JSON
+                # Use node type as additional label for better visualization
+                node_type = node.get("type", "Unknown").replace(" ", "")
                 query = (
-                    "MERGE (n:NodeName {name: $name, UserId: $user_id}) "
+                    f"MERGE (n:NodeName:`{node_type}` {{name: $name, UserId: $user_id}}) "
                     "SET n.type = $type, "
                     "n.discipline = $discipline, "
                     "n.bloom_level = $bloom_level, "
@@ -166,8 +168,10 @@ class Neo4jConnectionManager:
                 # Step 1: Create/update nodes
                 for node in nodes:
                     # Store PKG properties as individual fields
+                    # Use node type as additional label for better visualization
+                    node_type = node.get("type", "Unknown").replace(" ", "")
                     query = (
-                        "MERGE (n:NodeName {name: $name, UserId: $user_id}) "
+                        f"MERGE (n:NodeName:`{node_type}` {{name: $name, UserId: $user_id}}) "
                         "SET n.type = $type, "
                         "n.discipline = $discipline, "
                         "n.bloom_level = $bloom_level, "
