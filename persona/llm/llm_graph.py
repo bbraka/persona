@@ -2,7 +2,7 @@ import json
 from typing import List, Optional, Tuple, Dict, Any
 from persona.llm.prompts import GET_NODES, GET_RELATIONSHIPS, GENERATE_COMMUNITIES, GENERATE_STRUCTURED_INSIGHTS
 from persona.models.schema import EntityExtractionResponse, NodesAndRelationshipsResponse, CommunityStructure, AskResponse, AskRequest, create_dynamic_schema
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 from persona.utils.instructions_reader import INSTRUCTIONS
 from server.logging_config import get_logger
 from .client_factory import get_chat_client
@@ -13,7 +13,25 @@ logger = get_logger(__name__)
 class Node(BaseModel):
     name: str = Field(..., description="The node content - can be a simple label (e.g., 'Techno Music') or a narrative fragment (e.g., 'Deeply moved by classical music in empty spaces')")
     type: str = Field(..., description="The type/category of the node (e.g., 'Identity', 'Belief', 'Preference', 'Goal', 'Event', 'Relationship', etc.)")
-    properties: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional properties of the node (e.g., 'discipline', 'bloom_level', 'confidence', etc.)")
+    discipline: Optional[str] = Field(None, description="Academic/knowledge domain of the node")
+    bloom_level: Optional[str] = Field(None, description="Bloom's taxonomy cognitive level")
+    confidence: Optional[float] = Field(None, description="Extraction quality score (0.0-1.0)")
+    properties: Dict[str, Any] = Field(default_factory=dict, description="Additional properties of the node")
+    
+    @model_validator(mode='after')
+    def pack_properties(self) -> 'Node':
+        """Pack discipline, bloom_level, and confidence into properties dict if not already there."""
+        # Ensure properties dict is initialized
+        if self.properties is None:
+            self.properties = {}
+        
+        if self.discipline is not None and 'discipline' not in self.properties:
+            self.properties['discipline'] = self.discipline
+        if self.bloom_level is not None and 'bloom_level' not in self.properties:
+            self.properties['bloom_level'] = self.bloom_level
+        if self.confidence is not None and 'confidence' not in self.properties:
+            self.properties['confidence'] = self.confidence
+        return self
 
 class Relationship(BaseModel):
     source: str

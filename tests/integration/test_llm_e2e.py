@@ -61,10 +61,10 @@ class TestLLME2EAzure:
         
         # Create test nodes
         nodes = [
-            Node(name="Playing guitar", type="Hobby"),
-            Node(name="Reading science fiction", type="Interest"),
-            Node(name="Space exploration fascination", type="Interest"),
-            Node(name="Astronaut dream", type="Goal")
+            Node(name="Playing guitar", type="Hobby", discipline=None, bloom_level=None, confidence=None),
+            Node(name="Reading science fiction", type="Interest", discipline=None, bloom_level=None, confidence=None),
+            Node(name="Space exploration fascination", type="Interest", discipline=None, bloom_level=None, confidence=None),
+            Node(name="Astronaut dream", type="Goal", discipline=None, bloom_level=None, confidence=None)
         ]
         
         graph_context = "User has interests in music and technology"
@@ -165,8 +165,8 @@ class TestLLME2EMocked:
         )
         
         nodes = [
-            Node(name="First Node", type="Test"),
-            Node(name="Second Node", type="Test")
+            Node(name="First Node", type="Test", discipline=None, bloom_level=None, confidence=None),
+            Node(name="Second Node", type="Test", discipline=None, bloom_level=None, confidence=None)
         ]
         
         with patch('persona.llm.llm_graph.get_chat_client', return_value=mock_client):

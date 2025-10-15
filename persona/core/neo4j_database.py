@@ -95,18 +95,22 @@ class Neo4jConnectionManager:
             return
         async with self._ensure_driver().session() as session:
             for node in nodes:                
-                # Use parameterized query with APOC or dynamic labels via CASE
-                # For simplicity, just use NodeName label and store type as property
+                # Store PKG properties as individual fields, not nested JSON
                 query = (
                     "MERGE (n:NodeName {name: $name, UserId: $user_id}) "
-                    "SET n.type = $type, n.properties = $properties"
+                    "SET n.type = $type, "
+                    "n.discipline = $discipline, "
+                    "n.bloom_level = $bloom_level, "
+                    "n.confidence = $confidence"
                 )
-                properties = json.dumps(node.get("properties", {}))  # Serialize properties to JSON string
+                properties = node.get("properties", {})
                 await session.run(query, {
                     "name": node["name"],
                     "user_id": user_id,
                     "type": node.get("type", ""),
-                    "properties": properties
+                    "discipline": properties.get("discipline", ""),
+                    "bloom_level": properties.get("bloom_level", ""),
+                    "confidence": properties.get("confidence", 0.0)
                 })
 
     async def create_relationships(self, relationships: List[Dict[str, Any]], user_id: str) -> None:
@@ -160,19 +164,23 @@ class Neo4jConnectionManager:
             tx = await session.begin_transaction()
             try:
                 # Step 1: Create/update nodes
-                # Step 1: Create/update nodes
                 for node in nodes:
-                    # Use parameterized query without dynamic labels
+                    # Store PKG properties as individual fields
                     query = (
                         "MERGE (n:NodeName {name: $name, UserId: $user_id}) "
-                        "SET n.type = $type, n.properties = $properties"
+                        "SET n.type = $type, "
+                        "n.discipline = $discipline, "
+                        "n.bloom_level = $bloom_level, "
+                        "n.confidence = $confidence"
                     )
-                    properties = json.dumps(node.get("properties", {}))
+                    properties = node.get("properties", {})
                     await tx.run(query, {
                         "name": node["name"],
                         "user_id": user_id,
                         "type": node.get("type", ""),
-                        "properties": properties
+                        "discipline": properties.get("discipline", ""),
+                        "bloom_level": properties.get("bloom_level", ""),
+                        "confidence": properties.get("confidence", 0.0)
                     })
                     logger.debug(f"Transaction: Created/updated node {node['name']}")
                 # Step 2: Create relationships
@@ -204,19 +212,23 @@ class Neo4jConnectionManager:
                     })
                     logger.debug(f"Transaction: Added embedding for {emb_data['node_name']}")
                 
-                # Step 4: Update bloom levels and properties
+                # Step 4: Update bloom levels and other properties
                 for bloom_data in bloom_updates:
                     query = """
                     MATCH (n:NodeName {name: $node_name, UserId: $user_id})
-                    SET n.properties = $properties
+                    SET n.discipline = $discipline,
+                        n.bloom_level = $bloom_level,
+                        n.confidence = $confidence
                     """
-                    properties = json.dumps(bloom_data["properties"])
+                    props = bloom_data.get("properties", {})
                     await tx.run(query, {
                         "node_name": bloom_data["node_name"],
-                        "properties": properties,
-                        "user_id": user_id
+                        "user_id": user_id,
+                        "discipline": props.get("discipline", ""),
+                        "bloom_level": props.get("bloom_level", ""),
+                        "confidence": props.get("confidence", 0.0)
                     })
-                    logger.debug(f"Transaction: Updated bloom level for {bloom_data['node_name']}")
+                    logger.debug(f"Transaction: Updated properties for {bloom_data['node_name']}")
                 
                 # Commit all changes atomically
                 await tx.commit()
@@ -296,20 +308,21 @@ class Neo4jConnectionManager:
             else:
                 logger.debug("Vector index 'embeddings_index' already exists.")
 
-    async def query_text_similarity(self, keyword_embedding: List[float], user_id: str, index_name: str = "embeddings_index") -> List[Dict[str, Any]]:
+    async def query_text_similarity(self, keyword_embedding: List[float], user_id: str, limit: int = 5, index_name: str = "embeddings_index") -> List[Dict[str, Any]]:
         """
-        Query the Neo4j vector index to find the top 5 nodes similar to a given text keyword embedding, filtered by user ID.
+        Query the Neo4j vector index to find the top N nodes similar to a given text keyword embedding, filtered by user ID.
 
         Args:
         - keyword_embedding (List[float]): The embedding of the text keyword as a list of floats.
         - user_id (str): The user ID to filter the nodes by.
+        - limit (int): Maximum number of results to return (default: 5).
         - index_name (str): The name of the vector index used for querying.
 
         Returns:
         - List[Dict[str, Any]]: A list of dictionaries containing the node ID, node name, and their similarity scores.
         """
         query = """
-        CALL db.index.vector.queryNodes($indexName, 5, $embedding)
+        CALL db.index.vector.queryNodes($indexName, $limit, $embedding)
         YIELD node, score
         WHERE node.UserId = $user_id
         RETURN elementId(node) AS nodeId, node.name AS nodeName, score
@@ -319,7 +332,7 @@ class Neo4jConnectionManager:
         async with self._ensure_driver().session() as session:
             tx = await session.begin_transaction()
             try:
-                result = await tx.run(query, indexName=index_name, embedding=keyword_embedding, user_id=user_id)
+                result = await tx.run(query, indexName=index_name, embedding=keyword_embedding, user_id=user_id, limit=limit)
                 async for record in result:
                     results.append({
                         'nodeId': record['nodeId'],
@@ -364,7 +377,10 @@ class Neo4jConnectionManager:
     async def get_node_data(self, node_name: str, user_id: str) -> Optional[Dict[str, Any]]:
         query = """
         MATCH (n:NodeName {name: $node_name, UserId: $user_id})
-        RETURN n.name AS name, n.type AS type, n.properties AS properties
+        RETURN n.name AS name, n.type AS type, 
+               n.discipline AS discipline, 
+               n.bloom_level AS bloom_level, 
+               n.confidence AS confidence
         """
         async with self._ensure_driver().session() as session:
             result = await session.run(query, node_name=node_name, user_id=user_id)
@@ -373,7 +389,11 @@ class Neo4jConnectionManager:
                 return {
                     "name": record["name"],
                     "type": record["type"],
-                    "properties": json.loads(record["properties"]) if record["properties"] else {}
+                    "properties": {
+                        "discipline": record.get("discipline", ""),
+                        "bloom_level": record.get("bloom_level", ""),
+                        "confidence": record.get("confidence", 0.0)
+                    }
                 }
             return None
 
@@ -398,17 +418,25 @@ class Neo4jConnectionManager:
     async def get_all_nodes(self, user_id: str) -> List[Dict[str, Any]]:
         query = """
         MATCH (n:NodeName {UserId: $user_id})
-        RETURN n.name AS name, n.type AS type, n.properties AS properties
+        RETURN n.name AS name, n.type AS type, 
+               n.discipline AS discipline, 
+               n.bloom_level AS bloom_level, 
+               n.confidence AS confidence
         """
         async with self._ensure_driver().session() as session:
             result = await session.run(query, user_id=user_id)
             data = await result.data()
-            # Parse the properties JSON string back to dict
+            # Build properties dict from individual fields
             for record in data:
-                if record.get('properties'):
-                    record['properties'] = json.loads(record['properties'])
-                else:
-                    record['properties'] = {}
+                record['properties'] = {
+                    "discipline": record.get('discipline', ""),
+                    "bloom_level": record.get('bloom_level', ""),
+                    "confidence": record.get('confidence', 0.0)
+                }
+                # Remove individual fields from top level
+                record.pop('discipline', None)
+                record.pop('bloom_level', None)
+                record.pop('confidence', None)
             return data
 
     async def get_all_relationships(self, user_id: str) -> List[Dict[str, Any]]:

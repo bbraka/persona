@@ -152,9 +152,23 @@ Principles for Node Extraction:
 INCLUDE exactly these fields per node:
 - name: Short, unique handle (5-20 words) suitable for embedding, and representative of a cognitive fragment. 
 - type: One of: Identity · Memory · Preference · Trait · Narrative · Goal · Event · State · Relationship · Belief · Other types shared below. 
-- discipline: (optional) e.g. "psychology", "career", "hobby", "relationship", "health", etc.
-- bloom_level: (optional) cognitive level based on Bloom's taxonomy (e.g. Remember, Understand, Apply, Analyze, Evaluate, Create)
-- confidence: (optional) confidence score for the node extraction (0.0 to 1.0)
+- discipline: REQUIRED field indicating the academic/knowledge domain this node belongs to. Examples:
+  * Academic domains: "Psychology", "Computer Science", "History", "Biology", "Philosophy", "Economics", "Physics", "Literature"
+  * Life domains: "Career", "Health", "Relationships", "Hobbies", "Finance", "Education", "Personal Development"
+  * If unclear or general, use "General" or the most appropriate broad category
+- bloom_level: REQUIRED cognitive level based on Bloom's taxonomy:
+  * "Remember" - recalling facts, basic information
+  * "Understand" - comprehending meanings, explaining concepts
+  * "Apply" - using knowledge in practical situations
+  * "Analyze" - breaking down information, finding patterns
+  * "Evaluate" - making judgments, critical thinking
+  * "Create" - synthesizing ideas, producing new work
+- confidence: REQUIRED extraction quality score (0.0 to 1.0):
+  * 1.0 = Explicit, direct statement with complete clarity
+  * 0.8-0.9 = Clear implication with strong supporting context
+  * 0.6-0.7 = Reasonable inference from available information
+  * 0.4-0.5 = Weak signal or ambiguous data
+  * Below 0.4 = Too speculative, avoid creating node
 
 Node Types to Extract, with some examples and elaborations:
    - Identity: (name, age, location, occupation, education, demographic etc.)
@@ -183,12 +197,48 @@ Avoid:
 Example Response Format:
 {
   "nodes": [
-    { "name": "Born in 1990 in Seattle", "type": "Identity" },
-    { "name": "Prefers working in complete solitude before dawn", "type": "Preference" },
-    { "name": "Believes technology should serve human connection, not replace it", "type": "Belief" },
-    { "name": "Training for a marathon next spring", "type": "Goal" },
-    { "name": "Burned out after overworking last year", "type": "Event" },
-    { "name": "Has a younger sister named Alice", "type": "Relationship" }
+    { 
+      "name": "Born in 1990 in Seattle", 
+      "type": "Identity",
+      "discipline": "Personal History",
+      "bloom_level": "Remember",
+      "confidence": 1.0
+    },
+    { 
+      "name": "Prefers working in complete solitude before dawn", 
+      "type": "Preference",
+      "discipline": "Work Habits",
+      "bloom_level": "Understand",
+      "confidence": 0.9
+    },
+    { 
+      "name": "Believes technology should serve human connection, not replace it", 
+      "type": "Belief",
+      "discipline": "Philosophy",
+      "bloom_level": "Evaluate",
+      "confidence": 0.95
+    },
+    { 
+      "name": "Training for a marathon next spring", 
+      "type": "Goal",
+      "discipline": "Health",
+      "bloom_level": "Apply",
+      "confidence": 1.0
+    },
+    { 
+      "name": "Burned out after overworking last year", 
+      "type": "Event",
+      "discipline": "Career",
+      "bloom_level": "Remember",
+      "confidence": 1.0
+    },
+    { 
+      "name": "Has a younger sister named Alice", 
+      "type": "Relationship",
+      "discipline": "Family",
+      "bloom_level": "Remember",
+      "confidence": 1.0
+    }
   ]
 }
 
@@ -244,6 +294,18 @@ Guidelines for Creating Relationships:
       - CONFLICTS_WITH: Internal tension or contradiction
       - EVOLVES_INTO / TRANSFORMS_TO: Personal growth or change
       - APPLIES_TO: Practical application context
+   
+   H. Learning & Knowledge (PKG-specific):
+      - PREREQUISITE_OF / BUILDS_ON: One concept must be understood before another
+      - EXEMPLIFIES / INSTANTIATES: Concrete example of an abstract concept
+      - DEFINES / CLARIFIES: One concept defines or explains another
+      - COMPARES_TO / CONTRASTS_WITH: Comparative relationships for learning
+      - QUESTIONS / CHALLENGES: One concept raises questions about another
+      - ANSWERS / RESOLVES: One concept provides answers to questions in another
+      - SYNTHESIZES: Combines multiple concepts into new understanding
+      - ANNOTATES / COMMENTS_ON: Commentary or reflection on a concept
+      - LEARNED_FROM: Knowledge source relationship
+      - REINFORCES: Strengthens or supports existing knowledge
 
 2. Principles for Relationship Creation:
    - Only create relationships that are strongly justified

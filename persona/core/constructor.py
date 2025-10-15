@@ -66,12 +66,22 @@ class GraphConstructor:
             # Filter for stronger relationships (we might want to add a confidence score)
             relationships.extend(mixed_relationships)
         
-        # Create the graph update - nodes with type information
+        # Create the graph update - nodes with type information and PKG properties
         # Generate embeddings for each node
         node_texts = [node.name for node in new_nodes]
         embeddings = generate_embeddings(node_texts)
-        nodes = [NodeModel(name=node.name, type=node.type, embedding=embedding) 
-                 for node, embedding in zip(new_nodes, embeddings)]
+
+        # Build properties dict from PKG fields
+        nodes = []
+        for node, embedding in zip(new_nodes, embeddings):
+            properties = {}
+            if node.discipline:
+                properties["discipline"] = node.discipline
+            if node.bloom_level:
+                properties["bloom_level"] = node.bloom_level
+            if node.confidence is not None:
+                properties["confidence"] = node.confidence
+            nodes.append(NodeModel(name=node.name, type=node.type, properties=properties, embedding=embedding))
         
         relationships = [RelationshipModel(
             source=rel.source,
@@ -118,7 +128,7 @@ class GraphConstructor:
         """
         graph_context = await self.get_relevant_graph_context(user_id=self.user_id, nodes=nodes)
         # Convert schema nodes to LLM nodes
-        llm_nodes = [LLMNode(name=node.name, type=node.type) for node in nodes]
+        llm_nodes = [LLMNode(name=node.name, type=node.type, discipline=node.discipline, bloom_level=node.bloom_level, confidence=node.confidence) for node in nodes]
         llm_relationships, _ = await get_relationships(llm_nodes, graph_context)  # Ignore the ID mapping
         # Convert LLM relationships to schema relationships
         return [Relationship(source=rel.source, target=rel.target, relation=rel.relation) for rel in llm_relationships]
@@ -129,7 +139,7 @@ class GraphConstructor:
         Only creates relationships when there's a strong, meaningful connection.
         """
         # Convert schema nodes to LLM nodes
-        llm_nodes = [LLMNode(name=node.name, type=node.type) for node in new_nodes]
+        llm_nodes = [LLMNode(name=node.name, type=node.type, discipline=node.discipline, bloom_level=node.bloom_level, confidence=node.confidence) for node in new_nodes]
         llm_relationships, _ = await get_relationships(llm_nodes, existing_context)  # Ignore the ID mapping
         # Convert LLM relationships to schema relationships
         return [Relationship(source=rel.source, target=rel.target, relation=rel.relation) for rel in llm_relationships]
@@ -147,7 +157,7 @@ class GraphConstructor:
             return []
             
         # Convert NodeModel instances to Node instances for the LLM
-        nodes_for_llm = [LLMNode(name=node.name, type="Unknown") for node in existing_nodes]  # Add required type field
+        nodes_for_llm = [LLMNode(name=node.name, type="Unknown", discipline="", bloom_level="", confidence=0.0) for node in existing_nodes]  # Add required type field
         
         # Use the new context to find new relationships
         combined_context = f"New Information:\n{new_context}\n\nExisting Knowledge:\n{existing_context}"

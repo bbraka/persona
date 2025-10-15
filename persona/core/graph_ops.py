@@ -101,7 +101,17 @@ class GraphOps:
 
     async def text_similarity_search(self, query: str, user_id: str, limit: int = 5, threshold: float = 0.7, index_name: str = "embeddings_index") -> Dict[str, Any]:
         """
-        Perform a similarity search on the graph based on a text query. 
+        Perform a similarity search on the graph based on a text query.
+        
+        Args:
+            query: Text query to search for
+            user_id: User ID to filter results by
+            limit: Maximum number of results to return after filtering (default: 5)
+            threshold: Minimum similarity score to include (0.0-1.0, default: 0.7)
+            index_name: Name of the vector index to query
+            
+        Returns:
+            Dictionary with query and filtered results
         """
         if not await self.user_exists(user_id):
             logger.warning(f"User {user_id} does not exist. Cannot perform similarity search.")
@@ -113,10 +123,12 @@ class GraphOps:
             return {"query": query, "results": []}
 
         logger.debug(f"Performing similarity search for the query: '{query}' for user ID: '{user_id}'")
-        results = await self.neo4j_manager.query_text_similarity(query_embeddings[0], user_id)
+        # Fetch more results than limit to account for threshold filtering
+        fetch_limit = max(limit * 3, 20)  # Fetch 3x limit or at least 20 results
+        results = await self.neo4j_manager.query_text_similarity(query_embeddings[0], user_id, limit=fetch_limit)
 
-        # Filter by threshold
-        filtered = [r for r in results if r["score"] >= threshold]
+        # Filter by threshold and apply limit
+        filtered = [r for r in results if r["score"] >= threshold][:limit]
         return {
             "query": query,
             "results": [
@@ -192,6 +204,10 @@ class GraphOps:
         
         # Calculate bloom levels for all affected nodes
         bloom_updates = []
+        
+        # Create a lookup map for new nodes to preserve their LLM-extracted properties
+        new_nodes_map = {node.name: node.properties for node in graph_update.nodes}
+        
         affected_nodes = set([node.name for node in graph_update.nodes])
         
         # Get neighbors of new nodes to recalculate their bloom levels too
@@ -208,11 +224,18 @@ class GraphOps:
             try:
                 bloom_level = await self.calculate_bloom_level(node_name, user_id)
                 
-                # Get existing properties
-                node_data = await self.get_node_data(node_name, user_id)
-                current_props = node_data.properties if node_data.properties else {}
+                # For new nodes, use properties from graph_update (LLM-extracted)
+                # For existing nodes, fetch from DB to preserve their existing properties
+                if node_name in new_nodes_map:
+                    # New node: use LLM-extracted properties (discipline, confidence)
+                    props = new_nodes_map[node_name]
+                    current_props = props.copy() if props else {}
+                else:
+                    # Existing node: fetch current properties from DB
+                    node_data = await self.get_node_data(node_name, user_id)
+                    current_props = node_data.properties.copy() if node_data.properties else {}
                 
-                # Update with calculated bloom level
+                # Update with calculated bloom level (overwrites LLM bloom_level with topology-based)
                 current_props['bloom_level'] = bloom_level
                 
                 bloom_updates.append({
@@ -477,11 +500,19 @@ class GraphOps:
         
         query = """
         MATCH (n:NodeName {name: $node_name, UserId: $user_id})
-        SET n.properties = $properties
+        SET n.discipline = $discipline,
+            n.bloom_level = $bloom_level,
+            n.confidence = $confidence
         RETURN n.name as name
         """
         async with self.neo4j_manager.driver.session() as session:
-            result = await session.run(query, node_name=node_name, user_id=user_id, properties=json.dumps(properties))
+            result = await session.run(query, 
+                node_name=node_name, 
+                user_id=user_id, 
+                discipline=properties.get("discipline", ""),
+                bloom_level=properties.get("bloom_level", ""),
+                confidence=properties.get("confidence", 0.0)
+            )
             data = await result.data()
             if data:
                 logger.debug(f"Updated properties for node: {node_name}")

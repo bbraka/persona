@@ -15,9 +15,9 @@ class TestTemporaryIDSystem:
     async def test_id_mapping_generation(self):
         """Test that temporary IDs are generated correctly for nodes."""
         nodes = [
-            Node(name="First node with a long name", type="Identity"),
-            Node(name="Second node with different content", type="Belief"),
-            Node(name="Third node for comprehensive testing", type="Goal")
+            Node(name="First node with a long name", type="Identity", discipline=None, bloom_level=None, confidence=None),
+            Node(name="Second node with different content", type="Belief", discipline=None, bloom_level=None, confidence=None),
+            Node(name="Third node for comprehensive testing", type="Goal", discipline=None, bloom_level=None, confidence=None)
         ]
         
         # Mock the chat client to return empty relationships
@@ -45,8 +45,8 @@ class TestTemporaryIDSystem:
     async def test_relationship_conversion_logic(self):
         """Test that RelationshipWithID objects are correctly converted to Relationship objects."""
         nodes = [
-            Node(name="Source node name", type="Identity"),
-            Node(name="Target node name", type="Belief")
+            Node(name="Source node name", type="Identity", discipline=None, bloom_level=None, confidence=None),
+            Node(name="Target node name", type="Belief", discipline=None, bloom_level=None, confidence=None)
         ]
         
         # Mock LLM to return relationships with IDs
@@ -85,7 +85,7 @@ class TestTemporaryIDSystem:
     async def test_invalid_id_handling(self):
         """Test that invalid IDs in LLM response are handled gracefully."""
         nodes = [
-            Node(name="Valid node", type="Identity")
+            Node(name="Valid node", type="Identity", discipline=None, bloom_level=None, confidence=None)
         ]
         
         # Mock LLM to return relationship with invalid IDs
@@ -114,8 +114,8 @@ class TestTemporaryIDSystem:
     async def test_prompt_formatting_with_ids(self):
         """Test that the prompt is formatted correctly with temporary IDs."""
         nodes = [
-            Node(name="Complex node name with punctuation, commas!", type="Identity"),
-            Node(name="Another node: with special characters & symbols", type="Belief")
+            Node(name="Complex node name with punctuation, commas!", type="Identity", discipline=None, bloom_level=None, confidence=None),
+            Node(name="Another node: with special characters & symbols", type="Belief", discipline=None, bloom_level=None, confidence=None)
         ]
         
         mock_response = AsyncMock()
@@ -148,7 +148,7 @@ class TestTemporaryIDSystem:
     @pytest.mark.asyncio
     async def test_single_node_handling(self):
         """Test that single node generates correct ID mapping."""
-        nodes = [Node(name="Single node", type="Identity")]
+        nodes = [Node(name="Single node", type="Identity", discipline=None, bloom_level=None, confidence=None)]
         
         mock_response = AsyncMock()
         mock_response.content = '{"relationships": []}'
@@ -165,7 +165,7 @@ class TestTemporaryIDSystem:
     @pytest.mark.asyncio
     async def test_llm_response_model_type(self):
         """Test that the LLM is called with RelationshipWithID response model."""
-        nodes = [Node(name="Test node", type="Identity")]
+        nodes = [Node(name="Test node", type="Identity", discipline=None, bloom_level=None, confidence=None)]
         
         mock_response = AsyncMock()
         mock_response.content = '{"relationships": []}'
