@@ -12,7 +12,8 @@ from persona.services.ingest_service import IngestService
 from persona.services.rag_service import RAGService
 from persona.services.ask_service import AskService
 from persona.services.custom_data_service import CustomDataService
-from persona.models.schema import LearnRequest, LearnResponse, AskRequest, AskResponse, GraphSchema, CustomGraphUpdate, CustomNodeData, CustomRelationshipData
+from persona.services.graph_ui_service import GraphUIService
+from persona.models.schema import LearnRequest, LearnResponse, AskRequest, AskResponse, GraphSchema, CustomGraphUpdate, CustomNodeData, CustomRelationshipData, GraphUIDataResponse
 from server.dependencies import get_graph_ops
 from server.logging_config import get_logger
 import re
@@ -278,3 +279,43 @@ async def update_custom_data(
         if "Neo4j" in str(e) or "database" in str(e).lower():
             raise HTTPException(status_code=503, detail="Database connection error. Please try again later.")
         raise HTTPException(status_code=500, detail="Internal server error occurred while updating custom data")
+
+@router.get("/users/{user_id}/graph-ui-data", response_model=GraphUIDataResponse, status_code=status.HTTP_200_OK)
+async def get_graph_ui_data(
+    user_id: str = Path(..., description="The unique identifier for the user"),
+    graph_ops: GraphOps = Depends(get_graph_ops)
+):
+    """
+    Retrieve comprehensive graph data for UI visualization.
+
+    Returns:
+    - topics: Aggregated by discipline with entity counts, relationship counts, and Bloom level distribution
+    - insights: High-confidence nodes (confidence >= 0.7)
+    - sources: Aggregated by perspective or type
+    - nodes: All graph nodes with properties
+    - relationships: All graph relationships
+    """
+    try:
+        if not is_valid_user_id(user_id):
+            raise ValueError("Invalid user ID format.")
+
+        # Validate user exists
+        if not await graph_ops.user_exists(user_id):
+            logger.warning(f"Graph UI data requested for non-existent user: {user_id}")
+            raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+
+        logger.info(f"Fetching graph UI data for user {user_id}")
+        result = await GraphUIService.get_graph_ui_data(user_id, graph_ops)
+        logger.info(f"Graph UI data fetched successfully for user {user_id}")
+        return result
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        logger.warning(f"Invalid user ID format for graph UI data: {user_id} - {str(e)}")
+        raise HTTPException(status_code=422, detail=f"Invalid user ID format: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error fetching graph UI data for user {user_id}: {str(e)}")
+        if "Neo4j" in str(e) or "database" in str(e).lower():
+            raise HTTPException(status_code=503, detail="Database connection error. Please try again later.")
+        raise HTTPException(status_code=500, detail="Internal server error occurred while fetching graph UI data")

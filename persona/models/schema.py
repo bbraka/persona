@@ -254,3 +254,10 @@ class CustomGraphUpdate(BaseModel):
                 ]
             }
         }
+
+class GraphUIDataResponse(BaseModel):
+    topics: List[Dict[str, Any]]
+    insights: List[Dict[str, Any]]
+    sources: List[Dict[str, Any]]
+    nodes: List[Dict[str, Any]]
+    relationships: List[Dict[str, Any]]
