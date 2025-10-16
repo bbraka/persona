@@ -89,7 +89,7 @@ class Neo4jConnectionManager:
         else:
             logger.debug(f"Vector index '{index_name}' does not exist. Skipping drop operation.")
 
-    async def create_nodes(self, nodes: List[Dict[str, Any]], user_id: str) -> None:
+    async def create_nodes(self, nodes: List[Dict[str, Any]], user_id: str, store_custom_properties: bool = False) -> None:
         if not await self.user_exists(user_id):
             logger.warning(f"User {user_id} does not exist. Cannot create nodes.")
             return
@@ -98,22 +98,50 @@ class Neo4jConnectionManager:
                 # Store PKG properties as individual fields, not nested JSON
                 # Use node type as additional label for better visualization
                 node_type = node.get("type", "Unknown").replace(" ", "")
-                query = (
-                    f"MERGE (n:NodeName:`{node_type}` {{name: $name, UserId: $user_id}}) "
-                    "SET n.type = $type, "
-                    "n.discipline = $discipline, "
-                    "n.bloom_level = $bloom_level, "
-                    "n.confidence = $confidence"
-                )
+                # Ensure node_type is not empty
+                if not node_type or node_type == "":
+                    node_type = "Unknown"
                 properties = node.get("properties", {})
-                await session.run(query, {
-                    "name": node["name"],
-                    "user_id": user_id,
-                    "type": node.get("type", ""),
-                    "discipline": properties.get("discipline", ""),
-                    "bloom_level": properties.get("bloom_level", ""),
-                    "confidence": properties.get("confidence", 0.0)
-                })
+
+                if store_custom_properties:
+                    # For custom data: store ALL properties dynamically
+                    query_parts = [f"MERGE (n:NodeName:`{node_type}` {{name: $name, UserId: $user_id}})"]
+                    query_parts.append("SET n.type = $type")
+
+                    # Build dynamic SET clause for all properties
+                    params = {
+                        "name": node["name"],
+                        "user_id": user_id,
+                        "type": node.get("type", "")
+                    }
+
+                    # Add all custom properties to the query
+                    for key, value in properties.items():
+                        # Sanitize property key to be Neo4j-safe (alphanumeric + underscore)
+                        safe_key = key.replace("-", "_").replace(" ", "_")
+                        param_name = f"prop_{safe_key}"
+                        query_parts.append(f"SET n.{safe_key} = ${param_name}")
+                        params[param_name] = value
+
+                    query = " ".join(query_parts)
+                    await session.run(query, params)
+                else:
+                    # For ingested data: only store PKG properties (existing behavior)
+                    query = (
+                        f"MERGE (n:NodeName:`{node_type}` {{name: $name, UserId: $user_id}}) "
+                        "SET n.type = $type, "
+                        "n.discipline = $discipline, "
+                        "n.bloom_level = $bloom_level, "
+                        "n.confidence = $confidence"
+                    )
+                    await session.run(query, {
+                        "name": node["name"],
+                        "user_id": user_id,
+                        "type": node.get("type", ""),
+                        "discipline": properties.get("discipline", ""),
+                        "bloom_level": properties.get("bloom_level", ""),
+                        "confidence": properties.get("confidence", 0.0)
+                    })
 
     async def create_relationships(self, relationships: List[Dict[str, Any]], user_id: str) -> None:
         if not await self.user_exists(user_id):

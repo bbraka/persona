@@ -33,7 +33,7 @@ class GraphOps:
         # Clean the graph
         await self.neo4j_manager.clean_graph()
 
-    async def add_nodes(self, nodes: List[NodeModel], user_id: str):
+    async def add_nodes(self, nodes: List[NodeModel], user_id: str, store_custom_properties: bool = False):
         if not await self.user_exists(user_id):
             logger.warning(f"User {user_id} does not exist. Cannot add nodes.")
             return
@@ -44,8 +44,8 @@ class GraphOps:
             "type": node.type or "",
             "properties": node.properties or {}
         } for node in nodes]
-        await self.neo4j_manager.create_nodes(node_dicts, user_id)
-        
+        await self.neo4j_manager.create_nodes(node_dicts, user_id, store_custom_properties=store_custom_properties)
+
         # Generate and add embeddings for new nodes
         await self.add_nodes_batch_embeddings(nodes, user_id)
 
@@ -140,16 +140,22 @@ class GraphOps:
             ]
         }
     
-    async def update_graph(self, graph_update: NodesAndRelationshipsResponse, user_id: str):
+    async def update_graph(self, graph_update: NodesAndRelationshipsResponse, user_id: str, store_custom_properties: bool = False):
         """
         Update the graph with new nodes and relationships
+
+        Args:
+            graph_update: Contains nodes and relationships to add
+            user_id: User ID
+            store_custom_properties: If True, store all custom properties dynamically (for custom data endpoint)
+                                    If False, only store PKG properties: discipline, bloom_level, confidence (for ingest endpoint)
         """
         if not await self.user_exists(user_id):
             logger.warning(f"User {user_id} does not exist. Cannot update graph.")
             return
 
         if graph_update.nodes:
-            await self.add_nodes(graph_update.nodes, user_id)
+            await self.add_nodes(graph_update.nodes, user_id, store_custom_properties=store_custom_properties)
         if graph_update.relationships:
             await self.add_relationships(graph_update.relationships, user_id)
         if not graph_update.nodes and not graph_update.relationships:
