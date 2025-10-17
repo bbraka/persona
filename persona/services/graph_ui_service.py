@@ -66,9 +66,11 @@ class GraphUIService:
         """
 
         # Query 4: Get all nodes with their properties
+        # Exclude internal node types used for tracking (Reading Session, etc.)
         nodes_query = """
         MATCH (n:NodeName)
         WHERE n.UserId = $user_id
+          AND NOT n.type IN ['Reading Session', 'ReadingSession', 'CommunityHeader', 'CommunitySubheader']
         RETURN elementId(n) AS id,
                n.name AS name,
                n.type AS type,
@@ -83,9 +85,12 @@ class GraphUIService:
         # Query 5: Get all relationships
         # Relationships are stored with the relation type as the relationship type
         # and r.value contains the relation name
+        # Exclude relationships involving internal node types
         relationships_query = """
         MATCH (source:NodeName)-[r]->(target:NodeName)
         WHERE source.UserId = $user_id AND target.UserId = $user_id
+          AND NOT source.type IN ['Reading Session', 'ReadingSession', 'CommunityHeader', 'CommunitySubheader']
+          AND NOT target.type IN ['Reading Session', 'ReadingSession', 'CommunityHeader', 'CommunitySubheader']
         RETURN source.name AS source,
                target.name AS target,
                r.value AS relation
