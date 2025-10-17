@@ -81,7 +81,16 @@ class GraphConstructor:
                 properties["bloom_level"] = node.bloom_level
             if node.confidence is not None:
                 properties["confidence"] = node.confidence
-            nodes.append(NodeModel(name=node.name, type=node.type, properties=properties, embedding=embedding))
+            if node.chunk_id:
+                properties["chunk_id"] = node.chunk_id
+
+            nodes.append(NodeModel(
+                name=node.name,
+                type=node.type,
+                chunk_id=None,  # chunk_id is in properties, not as separate field
+                properties=properties,
+                embedding=embedding
+            ))
         
         relationships = [RelationshipModel(
             source=rel.source,
@@ -119,7 +128,7 @@ class GraphConstructor:
         graph_context = await self.get_relevant_graph_context(user_id=self.user_id, nodes=[])
         llm_nodes = await get_nodes(text, graph_context)
         # Convert LLM nodes to schema nodes
-        return [Node(name=node.name, type=node.type, discipline=getattr(node, 'discipline', ''), bloom_level=getattr(node, 'bloom_level', ''), confidence=getattr(node, 'confidence', 0.0)) for node in llm_nodes]
+        return [Node(name=node.name, type=node.type, chunk_id=getattr(node, 'chunk_id', None), discipline=getattr(node, 'discipline', ''), bloom_level=getattr(node, 'bloom_level', ''), confidence=getattr(node, 'confidence', 0.0)) for node in llm_nodes]
 
     async def generate_relationships(self, nodes: List[Node], context_description: str = "") -> List[Relationship]:
         """
@@ -128,7 +137,7 @@ class GraphConstructor:
         """
         graph_context = await self.get_relevant_graph_context(user_id=self.user_id, nodes=nodes)
         # Convert schema nodes to LLM nodes
-        llm_nodes = [LLMNode(name=node.name, type=node.type, discipline=node.discipline, bloom_level=node.bloom_level, confidence=node.confidence) for node in nodes]
+        llm_nodes = [LLMNode(name=node.name, type=node.type, chunk_id=node.chunk_id, discipline=node.discipline, bloom_level=node.bloom_level, confidence=node.confidence) for node in nodes]
         llm_relationships, _ = await get_relationships(llm_nodes, graph_context)  # Ignore the ID mapping
         # Convert LLM relationships to schema relationships
         return [Relationship(source=rel.source, target=rel.target, relation=rel.relation) for rel in llm_relationships]
@@ -139,7 +148,7 @@ class GraphConstructor:
         Only creates relationships when there's a strong, meaningful connection.
         """
         # Convert schema nodes to LLM nodes
-        llm_nodes = [LLMNode(name=node.name, type=node.type, discipline=node.discipline, bloom_level=node.bloom_level, confidence=node.confidence) for node in new_nodes]
+        llm_nodes = [LLMNode(name=node.name, type=node.type, chunk_id=node.chunk_id, discipline=node.discipline, bloom_level=node.bloom_level, confidence=node.confidence) for node in new_nodes]
         llm_relationships, _ = await get_relationships(llm_nodes, existing_context)  # Ignore the ID mapping
         # Convert LLM relationships to schema relationships
         return [Relationship(source=rel.source, target=rel.target, relation=rel.relation) for rel in llm_relationships]
@@ -157,7 +166,7 @@ class GraphConstructor:
             return []
             
         # Convert NodeModel instances to Node instances for the LLM
-        nodes_for_llm = [LLMNode(name=node.name, type="Unknown", discipline="", bloom_level="", confidence=0.0) for node in existing_nodes]  # Add required type field
+        nodes_for_llm = [LLMNode(name=node.name, type="Unknown", chunk_id=None, discipline="", bloom_level="", confidence=0.0) for node in existing_nodes]  # Add required type field
         
         # Use the new context to find new relationships
         combined_context = f"New Information:\n{new_context}\n\nExisting Knowledge:\n{existing_context}"

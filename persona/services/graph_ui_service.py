@@ -75,6 +75,7 @@ class GraphUIService:
                n.discipline AS discipline,
                n.bloom_level AS bloom_level,
                n.confidence AS confidence,
+               n.chunk_id AS chunk_id,
                properties(n) AS properties
         ORDER BY n.name
         """
@@ -136,6 +137,10 @@ class GraphUIService:
                 props.pop("discipline", None)
                 props.pop("bloom_level", None)
                 props.pop("confidence", None)
+                props.pop("chunk_id", None)  # Already in top-level
+
+                # Remove embedding vector (never send to client)
+                props.pop("embedding", None)
 
                 nodes.append({
                     "id": node["id"],
@@ -144,6 +149,7 @@ class GraphUIService:
                     "discipline": node.get("discipline"),
                     "bloom_level": node.get("bloom_level"),
                     "confidence": node.get("confidence"),
+                    "chunk_id": node.get("chunk_id"),
                     "properties": props  # Only custom properties remain
                 })
 

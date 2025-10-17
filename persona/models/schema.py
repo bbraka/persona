@@ -8,11 +8,13 @@ from typing import List, Optional, Dict, Any
 class UnstructuredData(BaseModel):
     title: str
     content: str
+    chunk_id: Optional[str] = None
     metadata: Optional[Dict[str, str]] = {}
 
 class Node(BaseModel):
     name: str = Field(..., description="The node content - can be a simple label (e.g., 'Techno Music') or a narrative fragment (e.g., 'Deeply moved by classical music in empty spaces')")
     type: str = Field(..., description="The type/category of the node (e.g., 'Identity', 'Belief', 'Preference', 'Goal', 'Event', 'Relationship', etc.)")
+    chunk_id: Optional[str] = Field(None, description="Optional chunk ID linking this node to a specific book chapter section")
     discipline: Optional[str] = Field(None, description="The discipline/category of the node (e.g., 'Music', 'Art', 'Technology', etc.)")
     bloom_level: Optional[str] = Field(None, description="The cognitive level of the node based on Bloom's taxonomy (e.g., 'Remember', 'Understand', 'Apply', 'Analyze', 'Evaluate', 'Create')")
     confidence: Optional[float] = Field(None, description="Confidence score for the node extraction (0.0 to 1.0)")
@@ -25,6 +27,7 @@ class Relationship(BaseModel):
 class NodeModel(BaseModel):
     name: str = Field(..., description="The node content - can be a simple label or narrative fragment")
     type: Optional[str] = Field(None, description="The type/category of the node (e.g., 'Identity', 'Belief', 'Preference', etc.)")
+    chunk_id: Optional[str] = Field(None, description="Optional chunk ID for tracking node source")
     properties: Optional[Dict[str, Any]] = Field(default_factory=dict)
     embedding: Optional[List[float]] = Field(None, description="Embedding vector for the node, if applicable")
 
@@ -33,7 +36,8 @@ class NodeModel(BaseModel):
             "example": {
                 "name": "Finds peace in early morning solitude",
                 "type": "Preference",
-                "properties": {},
+                "chunk_id": "chapter1_section3",
+                "properties": {"discipline": "Lifestyle", "bloom_level": "Understand", "confidence": 0.85},
                 "embedding": [0.1, 0.2, 0.3]
             }
         }
@@ -43,13 +47,18 @@ class RelationshipModel(BaseModel):
     source: str
     target: str
     relation: str
+    properties: Optional[Dict[str, Any]] = Field(default_factory=dict)
 
     class Config:
         json_schema_extra = {
             "example": {
                 "source": "Quantum Computing",
                 "target": "AI",
-                "relation": "RELATED_TO"
+                "relation": "RELATED_TO",
+                "properties": {
+                    "strength": 0.9,
+                    "created_at": "2025-10-17T08:00:00Z"
+                }
             }
         }
 
@@ -209,16 +218,21 @@ def create_dynamic_schema(output_schema: Dict[str, Any]) -> Dict[str, Any]:
 class CustomNodeData(BaseModel):
     name: str
     perspective: Optional[str] = None
-    properties: Optional[Dict[str, str]] = Field(default_factory=dict)
+    type: Optional[str] = None
+    chunk_id: Optional[str] = None
+    properties: Optional[Dict[str, Any]] = Field(default_factory=dict)
     embedding: Optional[List[float]] = Field(None, description="Embedding vector for the node, if applicable")
 
     class Config:
         json_schema_extra = {
             "example": {
                 "name": "Quantum Computing",
+                "type": "Concept",
+                "chunk_id": "book_27_chapter_1",
                 "properties": {
-                    "current_context": "Research",
-                    "frequency": 10
+                    "discipline": "Computer Science",
+                    "bloom_level": "Understand",
+                    "confidence": "0.9"
                 },
                 "embedding": [0.1, 0.2, 0.3]
             }

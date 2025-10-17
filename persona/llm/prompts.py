@@ -154,8 +154,12 @@ The nodes will be indexed in a knowledge graph and vector database hybrid system
 Principles for Node Extraction:
 
 INCLUDE exactly these fields per node:
-- name: Concise, generalizable concept (3-8 words) that represents transferable knowledge, not narrative specifics. 
-- type: One of: Identity · Memory · Preference · Trait · Narrative · Goal · Event · State · Relationship · Belief · Other types shared below. 
+- name: Concise, generalizable concept (3-8 words) that represents transferable knowledge, not narrative specifics.
+- type: One of: Identity · Memory · Preference · Trait · Narrative · Goal · Event · State · Relationship · Belief · Other types shared below.
+- chunk_id: OPTIONAL - ONLY include if the input content comes from a book chapter with a chunk_id reference.
+  * Used to link concepts back to specific book content sections
+  * For notes, chat messages, or writing projects: OMIT this field
+  * For book-derived concepts: Include the chunk_id provided in the input
 - discipline: REQUIRED field indicating the academic/knowledge domain this node belongs to. Examples:
   * Academic domains: "Psychology", "Computer Science", "History", "Biology", "Philosophy", "Economics", "Physics", "Literature"
   * Life domains: "Career", "Health", "Relationships", "Hobbies", "Finance", "Education", "Personal Development"
@@ -231,7 +235,9 @@ FOR PERSONAL USER DATA:
 
 Guidelines for Node Creation:
    - **For books/content**: Prioritize TRANSFERABLE CONCEPTS over plot details. Include major characters/events only if culturally significant.
-   - **For user data**: Extract personal specifics that define the individual.
+   - **For book-derived concepts**: Include the chunk_id if provided in the input - this links concepts to specific book sections for reference.
+   - **For user data**: Extract personal specifics that define the individual. Do NOT include chunk_id for personal data.
+   - **For notes/chat/writing projects**: Do NOT include chunk_id - these are not tied to book chunks.
    - Ask: "Can this node connect to knowledge from other sources?" If yes, it's well-abstracted.
    - Characters/events qualify if they're references people use in conversation ("That's so Gatsby" or "Orwellian surveillance")
    - Balance concrete (names, events) with abstract (concepts, patterns) for a rich knowledge graph
@@ -300,6 +306,7 @@ Example Response Format for BOOK CONTENT (The Count of Monte Cristo):
     {
       "name": "Betrayal by trusted colleagues",
       "type": "Concept",
+      "chunk_id": "uuid-1234-5678-9012",
       "discipline": "Psychology",
       "bloom_level": "Understand",
       "confidence": 0.95
@@ -307,6 +314,7 @@ Example Response Format for BOOK CONTENT (The Count of Monte Cristo):
     {
       "name": "Justice versus revenge",
       "type": "Concept",
+      "chunk_id": "uuid-1234-5678-9012",
       "discipline": "Philosophy",
       "bloom_level": "Evaluate",
       "confidence": 0.9
@@ -323,7 +331,7 @@ Example Response Format for BOOK CONTENT (The Count of Monte Cristo):
 
 NOTE: Relationships will be created separately (e.g., "The Count of Monte Cristo" WRITTEN_BY "Alexandre Dumas", "Edmond Dantès" APPEARS_IN "The Count of Monte Cristo")
 
-Example Response Format for USER DATA:
+Example Response Format for USER DATA (NOTE: No chunk_id for personal data):
 {
   "nodes": [
     {

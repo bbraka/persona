@@ -16,29 +16,30 @@ class CustomDataService:
             nodes = [
                 NodeModel(
                     name=node.name,
-                    type=node.properties.get("type") if node.properties else None,  # Extract type from properties for Neo4j label
+                    type=node.type,  # Use type from node directly
+                    chunk_id=node.chunk_id,  # Pass chunk_id
                     perspective=node.perspective,
                     properties=node.properties
                 ) for node in update.nodes
             ]
-            
+
             # Convert CustomRelationshipData to RelationshipModel
             relationships = [
                 RelationshipModel(
                     source=rel.source,
                     target=rel.target,
-                    relation=rel.relation_type  # Map relation_type to relation
+                    relation=rel.relation_type,  # Map relation_type to relation
+                    properties=rel.data  # Map data to properties
                 ) for rel in update.relationships
             ]
-            
-            # Use existing GraphOps to update the graph with custom properties enabled
+
+            # Use existing GraphOps to update the graph
             await self.graph_ops.update_graph(
                 NodesAndRelationshipsResponse(
                     nodes=nodes,
                     relationships=relationships
                 ),
-                user_id,
-                store_custom_properties=True  # Enable storing all custom properties dynamically
+                user_id
             )
             
             return {

@@ -13,6 +13,7 @@ logger = get_logger(__name__)
 class Node(BaseModel):
     name: str = Field(..., description="The node content - can be a simple label (e.g., 'Techno Music') or a narrative fragment (e.g., 'Deeply moved by classical music in empty spaces')")
     type: str = Field(..., description="The type/category of the node (e.g., 'Identity', 'Belief', 'Preference', 'Goal', 'Event', 'Relationship', etc.)")
+    chunk_id: Optional[str] = Field(None, description="Optional chunk ID linking this node to a specific book chapter section")
     discipline: Optional[str] = Field(None, description="Academic/knowledge domain of the node")
     bloom_level: Optional[str] = Field(None, description="Bloom's taxonomy cognitive level")
     confidence: Optional[float] = Field(None, description="Extraction quality score (0.0-1.0)")
@@ -20,11 +21,13 @@ class Node(BaseModel):
     
     @model_validator(mode='after')
     def pack_properties(self) -> 'Node':
-        """Pack discipline, bloom_level, and confidence into properties dict if not already there."""
+        """Pack chunk_id, discipline, bloom_level, and confidence into properties dict if not already there."""
         # Ensure properties dict is initialized
         if self.properties is None:
             self.properties = {}
-        
+
+        if self.chunk_id is not None and 'chunk_id' not in self.properties:
+            self.properties['chunk_id'] = self.chunk_id
         if self.discipline is not None and 'discipline' not in self.properties:
             self.properties['discipline'] = self.discipline
         if self.bloom_level is not None and 'bloom_level' not in self.properties:

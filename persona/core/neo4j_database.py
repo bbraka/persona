@@ -98,6 +98,9 @@ class Neo4jConnectionManager:
                 # Store PKG properties as individual fields, not nested JSON
                 # Use node type as additional label for better visualization
                 node_type = node.get("type", "Unknown").replace(" ", "")
+                properties = node.get("properties", {})
+
+                # Base query with standard fields
                 query = (
                     f"MERGE (n:NodeName:`{node_type}` {{name: $name, UserId: $user_id}}) "
                     "SET n.type = $type, "
@@ -105,15 +108,38 @@ class Neo4jConnectionManager:
                     "n.bloom_level = $bloom_level, "
                     "n.confidence = $confidence"
                 )
-                properties = node.get("properties", {})
-                await session.run(query, { # type: ignore
+
+                params = {
                     "name": node["name"],
                     "user_id": user_id,
                     "type": node.get("type", ""),
                     "discipline": properties.get("discipline", ""),
                     "bloom_level": properties.get("bloom_level", ""),
                     "confidence": properties.get("confidence", 0.0)
-                })
+                }
+
+                # Only set chunk_id if it's provided (not None or empty)
+                chunk_id = properties.get("chunk_id")
+                if chunk_id:
+                    query += ", n.chunk_id = $chunk_id"
+                    params["chunk_id"] = chunk_id
+
+                # Add custom properties dynamically (exclude standard PKG properties)
+                if properties:
+                    standard_props = {"discipline", "bloom_level", "confidence", "type", "chunk_id"}
+                    custom_props = {k: v for k, v in properties.items() if k not in standard_props}
+
+                    logger.debug(f"Node {node['name']}: Found {len(custom_props)} custom properties: {list(custom_props.keys())}")
+
+                    for prop_key, prop_value in custom_props.items():
+                        # Sanitize property key to be Cypher-safe
+                        safe_key = prop_key.replace(" ", "_").replace("-", "_")
+                        query += f", n.{safe_key} = ${safe_key}"
+                        params[safe_key] = str(prop_value)
+
+                logger.debug(f"Final query for node {node['name']}: {query}")
+                logger.debug(f"Params: {params}")
+                await session.run(query, params)  # type: ignore
 
     async def create_relationships(self, relationships: List[Dict[str, Any]], user_id: str) -> None:
         if not await self.user_exists(user_id):
@@ -124,18 +150,29 @@ class Neo4jConnectionManager:
                 await self._create_relationship(session, relationship, user_id)
 
     async def _create_relationship(self, session, relationship: Dict[str, Any], user_id: str) -> None:
+        # Base query to create relationship
         query = (
             "MATCH (source {UserId: $user_id}), (target {UserId: $user_id}) "
             "WHERE source.name = $source AND target.name = $target "
             "MERGE (source)-[r:`{relation}`]->(target) "
             "SET r.value = $relation"
         )
+
         params = {
             "source": relationship["source"],
             "target": relationship["target"],
             "relation": relationship["relation"],
             "user_id": user_id
         }
+
+        # Add properties if they exist
+        properties = relationship.get("properties", {})
+        if properties:
+            for prop_key, prop_value in properties.items():
+                # Sanitize property key
+                safe_key = prop_key.replace(" ", "_").replace("-", "_")
+                query += f", r.{safe_key} = ${safe_key}"
+                params[safe_key] = str(prop_value)
 
         await session.run(query, params)
 
@@ -178,14 +215,22 @@ class Neo4jConnectionManager:
                         "n.confidence = $confidence"
                     )
                     properties = node.get("properties", {})
-                    await tx.run(query, { # type: ignore
+                    params = {
                         "name": node["name"],
                         "user_id": user_id,
                         "type": node.get("type", ""),
                         "discipline": properties.get("discipline", ""),
                         "bloom_level": properties.get("bloom_level", ""),
                         "confidence": properties.get("confidence", 0.0)
-                    })
+                    }
+
+                    # Only set chunk_id if it's provided (same pattern as in create_nodes)
+                    chunk_id = properties.get("chunk_id")
+                    if chunk_id:
+                        query += ", n.chunk_id = $chunk_id"
+                        params["chunk_id"] = chunk_id
+
+                    await tx.run(query, params) # type: ignore
                     logger.debug(f"Transaction: Created/updated node {node['name']}")
                 # Step 2: Create relationships
                 for relationship in relationships:
@@ -206,15 +251,18 @@ class Neo4jConnectionManager:
                 # Step 3: Add embeddings (using the official Neo4j procedure)
                 for emb_data in embeddings_data:
                     query = """
-                    MATCH (n {name: $node_name, UserId: $user_id})
+                    MATCH (n:NodeName {name: $node_name, UserId: $user_id})
                     CALL db.create.setNodeVectorProperty(n, 'embedding', $embedding)
+                    RETURN n.name
                     """
-                    await tx.run(query, {
+                    result = await tx.run(query, {
                         "node_name": emb_data["node_name"],
                         "embedding": emb_data["embedding"],
                         "user_id": user_id
                     })
-                    logger.debug(f"Transaction: Added embedding for {emb_data['node_name']}")
+                    # Consume all results to avoid warnings (may be multiple nodes with same name)
+                    records = await result.data()
+                    logger.debug(f"Transaction: Added embedding for {emb_data['node_name']} ({len(records)} nodes updated)")
                 
                 # Step 4: Update bloom levels and other properties
                 for bloom_data in bloom_updates:
@@ -225,13 +273,21 @@ class Neo4jConnectionManager:
                         n.confidence = $confidence
                     """
                     props = bloom_data.get("properties", {})
-                    await tx.run(query, {
+                    params = {
                         "node_name": bloom_data["node_name"],
                         "user_id": user_id,
                         "discipline": props.get("discipline", ""),
                         "bloom_level": props.get("bloom_level", ""),
                         "confidence": props.get("confidence", 0.0)
-                    })
+                    }
+
+                    # Preserve chunk_id if present
+                    chunk_id = props.get("chunk_id")
+                    if chunk_id:
+                        query = query.rstrip() + ", n.chunk_id = $chunk_id\n                    "
+                        params["chunk_id"] = chunk_id
+
+                    await tx.run(query, params)
                     logger.debug(f"Transaction: Updated properties for {bloom_data['node_name']}")
                 
                 # Commit all changes atomically
@@ -268,14 +324,19 @@ class Neo4jConnectionManager:
         if not await self.user_exists(user_id):
             logger.warning(f"User {user_id} does not exist. Cannot add embedding.")
             return
-        
+
         # Use the official Neo4j procedure for setting vector properties
         query = """
-        MATCH (n {name: $node_name, UserId: $user_id})
+        MATCH (n:NodeName {name: $node_name, UserId: $user_id})
         CALL db.create.setNodeVectorProperty(n, 'embedding', $embedding)
+        RETURN n.name
         """
         async with self._ensure_driver().session() as session:
-            await session.run(query, node_name=node_name, embedding=embedding, user_id=user_id)
+            result = await session.run(query, node_name=node_name, embedding=embedding, user_id=user_id)
+            # Consume all results to handle multiple nodes with same name
+            records = await result.data()
+            if records:
+                logger.debug(f"Added embedding to {len(records)} node(s) named '{node_name}'")
 
     async def index_exists(self, index_name: str) -> bool:
         async with self._ensure_driver().session() as session:
