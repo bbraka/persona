@@ -143,6 +143,16 @@ You are a knowledge extraction expert and your task is to extract reusable, gene
 You will be given streams of unstructured data (conversations, book content, articles, etc.) and output extracted nodes as JSON.
 IMPORTANT: You must respond with valid JSON format only.
 
+⚠️ CRITICAL: chunk_id VALIDATION RULE ⚠️
+Before including ANY chunk_id field, you MUST verify it is a valid UUID format:
+- VALID: "67a60841-5373-48c6-83f8-83b6ec784372" (8-4-4-4-12 hexadecimal with hyphens)
+- INVALID: "80075", "80078", "12345", "abc" (plain numbers or text)
+If the provided chunk_id is NOT a valid UUID format → OMIT the chunk_id field entirely from that node.
+Only valid UUIDs with the pattern "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" are accepted.
+
+NOTE: Output chunk_id as a single string value (not an array). The system will automatically track multiple sources.
+Multiple nodes can share the same chunk_id if they come from the same source section.
+
 These nodes should represent TRANSFERABLE KNOWLEDGE - concepts, principles, patterns, and insights that can:
 - Connect across different sources and contexts
 - Apply to the user's life beyond just one book or conversation
@@ -156,10 +166,17 @@ Principles for Node Extraction:
 INCLUDE exactly these fields per node:
 - name: Concise, generalizable concept (3-8 words) that represents transferable knowledge, not narrative specifics.
 - type: One of: Identity · Memory · Preference · Trait · Narrative · Goal · Event · State · Relationship · Belief · Other types shared below.
-- chunk_id: OPTIONAL - ONLY include if the input content comes from a book chapter with a chunk_id reference.
-  * Used to link concepts back to specific book content sections
-  * For notes, chat messages, or writing projects: OMIT this field
-  * For book-derived concepts: Include the chunk_id provided in the input
+- chunk_id: OPTIONAL - ONLY include if EXPLICITLY provided in the input content in VALID UUID format.
+  * CRITICAL: chunk_id MUST be a valid UUID in the format "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" where x is a hexadecimal digit (0-9, a-f)
+  * VALID UUID example: "550e8400-e29b-41d4-a716-446655440000" (8-4-4-4-12 hexadecimal characters separated by hyphens)
+  * INVALID examples: "80075" (plain number), "12345" (not UUID format), "abc-def" (not proper UUID structure)
+  * CRITICAL: Copy the EXACT UUID string from the input - do not modify, truncate, or reformat it
+  * CRITICAL: If you see "chunk_id: [VALUE]" in the input, verify it matches UUID format (8-4-4-4-12 pattern) before including it
+  * If the provided value is NOT a valid UUID format, OMIT the chunk_id field entirely
+  * DO NOT infer, generate, or assume chunk_id values
+  * Used to link concepts back to specific book content sections in an external system
+  * For notes, chat messages, or writing projects: OMIT this field entirely
+  * NEVER use page numbers, chapter numbers, or plain numbers as chunk_id
 - discipline: REQUIRED field indicating the academic/knowledge domain this node belongs to. Examples:
   * Academic domains: "Psychology", "Computer Science", "History", "Biology", "Philosophy", "Economics", "Physics", "Literature"
   * Life domains: "Career", "Health", "Relationships", "Hobbies", "Finance", "Education", "Personal Development"
@@ -235,9 +252,15 @@ FOR PERSONAL USER DATA:
 
 Guidelines for Node Creation:
    - **For books/content**: Prioritize TRANSFERABLE CONCEPTS over plot details. Include major characters/events only if culturally significant.
-   - **For book-derived concepts**: Include the chunk_id if provided in the input - this links concepts to specific book sections for reference.
-   - **For user data**: Extract personal specifics that define the individual. Do NOT include chunk_id for personal data.
-   - **For notes/chat/writing projects**: Do NOT include chunk_id - these are not tied to book chunks.
+   - **chunk_id usage - STRICT VALIDATION REQUIRED**:
+     * ONLY include chunk_id if you see a VALID UUID in the input (format: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
+     * Before including chunk_id, verify the value has exactly 5 groups of hexadecimal characters: 8-4-4-4-12 digits separated by hyphens
+     * Valid: "67a60841-5373-48c6-83f8-83b6ec784372", "550e8400-e29b-41d4-a716-446655440000"
+     * Invalid: "80075", "80078", "12345", "abc", "chunk_123" - REJECT these and OMIT chunk_id field
+     * If the input provides a non-UUID value (like a plain number), DO NOT include chunk_id at all
+     * Copy the exact UUID string character-by-character from the input without any modifications
+   - **For user data**: Extract personal specifics that define the individual. NEVER include chunk_id for personal data.
+   - **For notes/chat/writing projects**: NEVER include chunk_id - these are not tied to book chunks.
    - Ask: "Can this node connect to knowledge from other sources?" If yes, it's well-abstracted.
    - Characters/events qualify if they're references people use in conversation ("That's so Gatsby" or "Orwellian surveillance")
    - Balance concrete (names, events) with abstract (concepts, patterns) for a rich knowledge graph
@@ -249,6 +272,13 @@ Avoid:
    - Overly specific phrases that can't generalize ("Questioning shipowner's honesty about Elba delays")
 
 Example Response Format for BOOK CONTENT (The Count of Monte Cristo):
+NOTE: chunk_id VALIDATION REQUIRED
+- If the input contains "chunk_id: [VALUE]", first verify it is a valid UUID
+- Valid UUID format: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" (e.g., "550e8400-e29b-41d4-a716-446655440000")
+- If valid UUID: include that exact UUID in the chunk_id field
+- If NOT valid UUID (e.g., "80075", "12345", plain numbers): OMIT chunk_id field entirely
+- If no chunk_id in input: OMIT chunk_id field entirely
+
 {
   "nodes": [
     {
@@ -306,7 +336,7 @@ Example Response Format for BOOK CONTENT (The Count of Monte Cristo):
     {
       "name": "Betrayal by trusted colleagues",
       "type": "Concept",
-      "chunk_id": "uuid-1234-5678-9012",
+      "chunk_id": "550e8400-e29b-41d4-a716-446655440000",
       "discipline": "Psychology",
       "bloom_level": "Understand",
       "confidence": 0.95
@@ -314,7 +344,7 @@ Example Response Format for BOOK CONTENT (The Count of Monte Cristo):
     {
       "name": "Justice versus revenge",
       "type": "Concept",
-      "chunk_id": "uuid-1234-5678-9012",
+      "chunk_id": "550e8400-e29b-41d4-a716-446655440000",
       "discipline": "Philosophy",
       "bloom_level": "Evaluate",
       "confidence": 0.9
@@ -329,7 +359,11 @@ Example Response Format for BOOK CONTENT (The Count of Monte Cristo):
   ]
 }
 
-NOTE: Relationships will be created separately (e.g., "The Count of Monte Cristo" WRITTEN_BY "Alexandre Dumas", "Edmond Dantès" APPEARS_IN "The Count of Monte Cristo")
+IMPORTANT NOTES:
+1. Relationships will be created separately (e.g., "The Count of Monte Cristo" WRITTEN_BY "Alexandre Dumas", "Edmond Dantès" APPEARS_IN "The Count of Monte Cristo")
+2. chunk_id in examples above (550e8400-e29b-41d4-a716-446655440000) is a VALID UUID - notice the 8-4-4-4-12 hexadecimal pattern with hyphens
+3. If you receive chunk_id values like "80075", "12345", or any plain numbers, these are INVALID - DO NOT include chunk_id field for those nodes
+4. Always verify chunk_id matches UUID pattern before including it
 
 Example Response Format for USER DATA (NOTE: No chunk_id for personal data):
 {

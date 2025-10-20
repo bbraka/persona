@@ -118,15 +118,19 @@ class Neo4jConnectionManager:
                     "confidence": properties.get("confidence", 0.0)
                 }
 
-                # Only set chunk_id if it's provided (not None or empty)
-                chunk_id = properties.get("chunk_id")
-                if chunk_id:
-                    query += ", n.chunk_id = $chunk_id"
-                    params["chunk_id"] = chunk_id
+                # Handle chunk_ids array (new format) or chunk_id (legacy format)
+                chunk_ids = node.get("chunk_ids", [])
+                if chunk_ids:
+                    query += ", n.chunk_ids = $chunk_ids"
+                    params["chunk_ids"] = chunk_ids
+                elif properties.get("chunk_id"):
+                    # Legacy: single chunk_id, convert to array
+                    query += ", n.chunk_ids = $chunk_ids"
+                    params["chunk_ids"] = [properties.get("chunk_id")]
 
                 # Add custom properties dynamically (exclude standard PKG properties)
                 if properties:
-                    standard_props = {"discipline", "bloom_level", "confidence", "type", "chunk_id"}
+                    standard_props = {"discipline", "bloom_level", "confidence", "type", "chunk_id", "chunk_ids"}
                     custom_props = {k: v for k, v in properties.items() if k not in standard_props}
 
                     logger.debug(f"Node {node['name']}: Found {len(custom_props)} custom properties: {list(custom_props.keys())}")
@@ -224,11 +228,15 @@ class Neo4jConnectionManager:
                         "confidence": properties.get("confidence", 0.0)
                     }
 
-                    # Only set chunk_id if it's provided (same pattern as in create_nodes)
-                    chunk_id = properties.get("chunk_id")
-                    if chunk_id:
-                        query += ", n.chunk_id = $chunk_id"
-                        params["chunk_id"] = chunk_id
+                    # Handle chunk_ids array (new format) or chunk_id (legacy format)
+                    chunk_ids = node.get("chunk_ids", [])
+                    if chunk_ids:
+                        query += ", n.chunk_ids = $chunk_ids"
+                        params["chunk_ids"] = chunk_ids
+                    elif properties.get("chunk_id"):
+                        # Legacy: single chunk_id, convert to array
+                        query += ", n.chunk_ids = $chunk_ids"
+                        params["chunk_ids"] = [properties.get("chunk_id")]
 
                     await tx.run(query, params) # type: ignore
                     logger.debug(f"Transaction: Created/updated node {node['name']}")
@@ -438,6 +446,51 @@ class Neo4jConnectionManager:
     @staticmethod
     def _validate_embedding(embedding: List[float]) -> bool:
         return isinstance(embedding, list) and all(isinstance(item, float) for item in embedding)
+
+    async def append_chunk_ids_to_node(
+        self,
+        node_name: str,
+        chunk_ids: List[str],
+        user_id: str
+    ) -> None:
+        """
+        Append chunk_ids to an existing node's chunk_ids array.
+        This is used when merging similar nodes - we want to preserve all source chunk references.
+
+        Args:
+            node_name: Name of the node to update
+            chunk_ids: List of chunk_ids to append
+            user_id: User ID
+        """
+        if not await self.user_exists(user_id):
+            logger.warning(f"User {user_id} does not exist. Cannot append chunk_ids.")
+            return
+
+        if not chunk_ids:
+            return
+
+        async with self._ensure_driver().session() as session:
+            # Use Cypher to append to array, removing duplicates using apoc.coll.toSet or manual deduplication
+            query = """
+            MATCH (n:NodeName {name: $node_name, UserId: $user_id})
+            WITH n, COALESCE(n.chunk_ids, []) as existing_ids
+            WITH n, existing_ids + [id IN $new_chunk_ids WHERE NOT id IN existing_ids] as updated_ids
+            SET n.chunk_ids = updated_ids
+            RETURN size(n.chunk_ids) as total_chunks
+            """
+
+            result = await session.run(
+                query,
+                node_name=node_name,
+                user_id=user_id,
+                new_chunk_ids=chunk_ids
+            )
+
+            data = await result.single()
+            if data:
+                logger.debug(
+                    f"Node '{node_name}' now has {data['total_chunks']} chunk_ids after appending {len(chunk_ids)}"
+                )
 
     async def get_node_data(self, node_name: str, user_id: str) -> Optional[Dict[str, Any]]:
         query = """

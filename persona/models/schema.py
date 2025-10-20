@@ -14,7 +14,8 @@ class UnstructuredData(BaseModel):
 class Node(BaseModel):
     name: str = Field(..., description="The node content - can be a simple label (e.g., 'Techno Music') or a narrative fragment (e.g., 'Deeply moved by classical music in empty spaces')")
     type: str = Field(..., description="The type/category of the node (e.g., 'Identity', 'Belief', 'Preference', 'Goal', 'Event', 'Relationship', etc.)")
-    chunk_id: Optional[str] = Field(None, description="Optional chunk ID linking this node to a specific book chapter section")
+    chunk_id: Optional[str] = Field(None, description="Optional chunk ID linking this node to a specific book chapter section (legacy - use chunk_ids instead)")
+    chunk_ids: Optional[List[str]] = Field(default_factory=list, description="Array of chunk IDs linking this node to multiple source sections")
     discipline: Optional[str] = Field(None, description="The discipline/category of the node (e.g., 'Music', 'Art', 'Technology', etc.)")
     bloom_level: Optional[str] = Field(None, description="The cognitive level of the node based on Bloom's taxonomy (e.g., 'Remember', 'Understand', 'Apply', 'Analyze', 'Evaluate', 'Create')")
     confidence: Optional[float] = Field(None, description="Confidence score for the node extraction (0.0 to 1.0)")
@@ -27,7 +28,8 @@ class Relationship(BaseModel):
 class NodeModel(BaseModel):
     name: str = Field(..., description="The node content - can be a simple label or narrative fragment")
     type: Optional[str] = Field(None, description="The type/category of the node (e.g., 'Identity', 'Belief', 'Preference', etc.)")
-    chunk_id: Optional[str] = Field(None, description="Optional chunk ID for tracking node source")
+    chunk_id: Optional[str] = Field(None, description="Optional chunk ID for tracking node source (legacy - use chunk_ids instead)")
+    chunk_ids: Optional[List[str]] = Field(default_factory=list, description="Array of chunk IDs linking this node to multiple source sections")
     properties: Optional[Dict[str, Any]] = Field(default_factory=dict)
     embedding: Optional[List[float]] = Field(None, description="Embedding vector for the node, if applicable")
 
@@ -36,7 +38,7 @@ class NodeModel(BaseModel):
             "example": {
                 "name": "Finds peace in early morning solitude",
                 "type": "Preference",
-                "chunk_id": "chapter1_section3",
+                "chunk_ids": ["chapter1_section3", "chapter2_section1"],
                 "properties": {"discipline": "Lifestyle", "bloom_level": "Understand", "confidence": 0.85},
                 "embedding": [0.1, 0.2, 0.3]
             }
@@ -219,7 +221,8 @@ class CustomNodeData(BaseModel):
     name: str
     perspective: Optional[str] = None
     type: Optional[str] = None
-    chunk_id: Optional[str] = None
+    chunk_id: Optional[str] = None  # Legacy support
+    chunk_ids: Optional[List[str]] = Field(default_factory=list, description="Array of chunk IDs linking this node to multiple source sections")
     properties: Optional[Dict[str, Any]] = Field(default_factory=dict)
     embedding: Optional[List[float]] = Field(None, description="Embedding vector for the node, if applicable")
 
@@ -228,7 +231,7 @@ class CustomNodeData(BaseModel):
             "example": {
                 "name": "Quantum Computing",
                 "type": "Concept",
-                "chunk_id": "book_27_chapter_1",
+                "chunk_ids": ["book_27_chapter_1", "book_27_chapter_5"],
                 "properties": {
                     "discipline": "Computer Science",
                     "bloom_level": "Understand",

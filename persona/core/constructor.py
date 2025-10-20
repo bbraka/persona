@@ -81,13 +81,20 @@ class GraphConstructor:
                 properties["bloom_level"] = node.bloom_level
             if node.confidence is not None:
                 properties["confidence"] = node.confidence
-            if node.chunk_id:
-                properties["chunk_id"] = node.chunk_id
+
+            # Convert chunk_id to chunk_ids array for storage
+            chunk_ids_list = []
+            if hasattr(node, 'chunk_ids') and node.chunk_ids:
+                # New format: already an array
+                chunk_ids_list = node.chunk_ids
+            elif hasattr(node, 'chunk_id') and node.chunk_id:
+                # Legacy format: single chunk_id, convert to array
+                chunk_ids_list = [node.chunk_id]
 
             nodes.append(NodeModel(
                 name=node.name,
                 type=node.type,
-                chunk_id=None,  # chunk_id is in properties, not as separate field
+                chunk_ids=chunk_ids_list,  # Always use array format
                 properties=properties,
                 embedding=embedding
             ))
@@ -108,6 +115,11 @@ class GraphConstructor:
         try:
             await self.graph_ops.update_graph_with_bloom_transactional(graph_update, self.user_id)
             logger.info(f"Successfully ingested {len(nodes)} nodes and {len(relationships)} relationships with bloom levels")
+
+            # NOTE: Layer 2 consolidation DISABLED - it was too slow and buggy
+            # Layer 1 prevention (in add_nodes) is sufficient for preventing duplicates
+            # await self._consolidate_duplicates_inline()
+
         except Exception as e:
             logger.error(f"Failed to ingest data (transaction rolled back): {e}")
             raise
@@ -182,6 +194,31 @@ class GraphConstructor:
         if self.graph_context_retriever is None:
             raise RuntimeError("GraphConstructor must be used as an async context manager")
         return await self.graph_context_retriever.get_relevant_graph_context(nodes=nodes, user_id=user_id, max_hops=max_hops)
+
+    async def _consolidate_duplicates_inline(self):
+        """
+        Automatically consolidate duplicate nodes after ingestion.
+        This runs inline as part of the ingestion process.
+        """
+        try:
+            logger.info("Running automatic duplicate consolidation...")
+
+            report = await self.graph_ops.deduplicator.consolidate_duplicate_nodes(
+                user_id=self.user_id,
+                dry_run=False  # Actually consolidate
+            )
+
+            if report["duplicate_clusters"]:
+                logger.info(
+                    f"Consolidated {report['nodes_to_remove']} duplicate nodes "
+                    f"across {len(report['duplicate_clusters'])} clusters"
+                )
+            else:
+                logger.debug("No duplicate nodes found during consolidation")
+
+        except Exception as e:
+            # Don't fail the entire ingestion if consolidation has issues
+            logger.warning(f"Duplicate consolidation failed (non-fatal): {e}")
 
     async def close(self):
         await self.__aexit__(None, None, None)

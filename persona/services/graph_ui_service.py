@@ -55,10 +55,15 @@ class GraphUIService:
 
         # Query 3: Get sources (aggregated by perspective field from custom data)
         # Perspective is used in custom data, type for ingested data
+        # Use CASE WHEN to avoid warnings about non-existent properties
         sources_query = """
         MATCH (n:NodeName)
         WHERE n.UserId = $user_id
-        WITH coalesce(n.perspective, n.type, 'Direct input') AS source_name,
+        WITH CASE
+            WHEN n.perspective IS NOT NULL THEN n.perspective
+            WHEN n.type IS NOT NULL THEN n.type
+            ELSE 'Direct input'
+        END AS source_name,
              count(n) AS count
         RETURN source_name AS name,
                count
@@ -77,7 +82,7 @@ class GraphUIService:
                n.discipline AS discipline,
                n.bloom_level AS bloom_level,
                n.confidence AS confidence,
-               n.chunk_id AS chunk_id,
+               n.chunk_ids AS chunk_ids,
                properties(n) AS properties
         ORDER BY n.name
         """
@@ -142,7 +147,8 @@ class GraphUIService:
                 props.pop("discipline", None)
                 props.pop("bloom_level", None)
                 props.pop("confidence", None)
-                props.pop("chunk_id", None)  # Already in top-level
+                props.pop("chunk_id", None)  # Legacy
+                props.pop("chunk_ids", None)  # Already in top-level
 
                 # Remove embedding vector (never send to client)
                 props.pop("embedding", None)
@@ -154,7 +160,7 @@ class GraphUIService:
                     "discipline": node.get("discipline"),
                     "bloom_level": node.get("bloom_level"),
                     "confidence": node.get("confidence"),
-                    "chunk_id": node.get("chunk_id"),
+                    "chunk_ids": node.get("chunk_ids", []),  # Array of chunk UUIDs
                     "properties": props  # Only custom properties remain
                 })
 

@@ -13,15 +13,21 @@ class CustomDataService:
         """
         try:
             # Convert CustomNodeData to NodeModel
-            nodes = [
-                NodeModel(
+            nodes = []
+            for node in update.nodes:
+                # Handle chunk_id (legacy) or chunk_ids (new) from CustomNodeData
+                chunk_ids_list = []
+                if hasattr(node, 'chunk_ids') and node.chunk_ids:
+                    chunk_ids_list = node.chunk_ids
+                elif hasattr(node, 'chunk_id') and node.chunk_id:
+                    chunk_ids_list = [node.chunk_id]
+
+                nodes.append(NodeModel(
                     name=node.name,
-                    type=node.type,  # Use type from node directly
-                    chunk_id=node.chunk_id,  # Pass chunk_id
-                    perspective=node.perspective,
+                    type=node.type,
+                    chunk_ids=chunk_ids_list,  # Always use array
                     properties=node.properties
-                ) for node in update.nodes
-            ]
+                ))
 
             # Convert CustomRelationshipData to RelationshipModel
             relationships = [

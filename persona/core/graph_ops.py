@@ -2,20 +2,40 @@ import json
 from persona.core.neo4j_database import Neo4jConnectionManager
 from persona.llm.embeddings import generate_embeddings
 from persona.models.schema import (
-    NodeModel, RelationshipModel, NodesAndRelationshipsResponse, 
+    NodeModel, RelationshipModel, NodesAndRelationshipsResponse,
     CommunityStructure, Subgraph, Node
 )
 from typing import List, Dict, Any, Optional
 from persona.llm.llm_graph import detect_communities
 from collections import defaultdict
 from server.logging_config import get_logger
+from persona.core.deduplication import NodeDeduplicator
 
 logger = get_logger(__name__)
 
+# Deduplication is always enabled with a fixed threshold
+DEDUP_SIMILARITY_THRESHOLD = 0.85
+
 class GraphOps:
-    def __init__(self, neo4j_manager: Optional[Neo4jConnectionManager] = None):
-        """Initialize GraphOps with an optional Neo4j manager"""
+    def __init__(
+        self,
+        neo4j_manager: Optional[Neo4jConnectionManager] = None,
+        dedup_similarity_threshold: float = DEDUP_SIMILARITY_THRESHOLD
+    ):
+        """
+        Initialize GraphOps with an optional Neo4j manager.
+
+        Args:
+            neo4j_manager: Neo4j connection manager instance
+            dedup_similarity_threshold: Similarity threshold for deduplication (0.0-1.0, default: 0.85)
+        """
         self.neo4j_manager = neo4j_manager if neo4j_manager is not None else Neo4jConnectionManager()
+
+        # Deduplication is always enabled
+        self.deduplicator = NodeDeduplicator(
+            self.neo4j_manager,
+            similarity_threshold=dedup_similarity_threshold
+        )
 
     async def __aenter__(self):
         await self.initialize()
@@ -36,19 +56,60 @@ class GraphOps:
     async def add_nodes(self, nodes: List[NodeModel], user_id: str):
         if not await self.user_exists(user_id):
             logger.warning(f"User {user_id} does not exist. Cannot add nodes.")
-            return
+            return {"nodes_created": 0, "nodes_merged": 0, "node_mapping": {}}
 
-        # Create nodes with names, properties, types, and chunk_id
-        node_dicts = [{
-            "name": node.name,
-            "type": node.type or "",
-            "properties": node.properties or {},
-            "chunk_id": getattr(node, 'chunk_id', None)
-        } for node in nodes]
-        await self.neo4j_manager.create_nodes(node_dicts, user_id)
+        # Check for semantic duplicates and create mapping
+        nodes_to_create = []
+        node_mapping = {}  # Maps new_node_name -> existing_node_name for duplicates
+        merged_count = 0
 
-        # Generate and add embeddings for new nodes
-        await self.add_nodes_batch_embeddings(nodes, user_id)
+        for node in nodes:
+            # Check if a similar node already exists
+            # Pass the embedding if node has one (avoids regenerating)
+            similar = await self.deduplicator.find_similar_node(
+                node_name=node.name,
+                node_type=node.type or "",
+                user_id=user_id,
+                embedding=node.embedding if hasattr(node, 'embedding') else None
+            )
+
+            if similar:
+                # Instead of skipping, map this node to the existing similar node
+                node_mapping[node.name] = similar["name"]
+                merged_count += 1
+                logger.info(
+                    f"Merging node '{node.name}' into existing similar node '{similar['name']}' "
+                    f"(score: {similar['score']:.3f})"
+                )
+                continue
+
+            nodes_to_create.append(node)
+
+        if merged_count:
+            logger.info(f"Merged {merged_count} nodes into existing similar nodes")
+
+        nodes_created = 0
+        if nodes_to_create:
+            # Create nodes with names, properties, types, and chunk_id
+            node_dicts = [{
+                "name": node.name,
+                "type": node.type or "",
+                "properties": node.properties or {},
+                "chunk_id": getattr(node, 'chunk_id', None)
+            } for node in nodes_to_create]
+            await self.neo4j_manager.create_nodes(node_dicts, user_id)
+            nodes_created = len(nodes_to_create)
+
+            # Generate and add embeddings for new nodes
+            await self.add_nodes_batch_embeddings(nodes_to_create, user_id)
+        else:
+            logger.info("No new nodes to create after deduplication")
+
+        return {
+            "nodes_created": nodes_created,
+            "nodes_merged": merged_count,
+            "node_mapping": node_mapping
+        }
 
 
     async def add_nodes_batch_embeddings(self, nodes: List[NodeModel], user_id: str):
@@ -168,7 +229,11 @@ class GraphOps:
         """
         Update graph with nodes, relationships, embeddings, and bloom levels in a single transaction.
         If any step fails, all changes are rolled back for data consistency.
-        
+
+        This method includes semantic deduplication:
+        - Similar nodes are detected and merged into existing ones
+        - Relationships are automatically redirected to canonical node names
+
         Args:
             graph_update: Contains nodes and relationships to add
             user_id: User ID
@@ -176,53 +241,119 @@ class GraphOps:
         if not await self.user_exists(user_id):
             logger.warning(f"User {user_id} does not exist. Cannot update graph.")
             return
-        
+
         if not graph_update.nodes and not graph_update.relationships:
             logger.debug("No nodes or relationships to update.")
             return
-        
-        # Prepare data for transaction
-        nodes_data = []
+
+        # STEP 1: Perform deduplication and get node mapping
+        # This checks for semantic duplicates and returns a mapping of new_name -> existing_name
+        node_mapping = {}
+        nodes_to_create = []
         embeddings_data = []
-        
-        # Process nodes and embeddings
+        chunk_ids_to_append = {}  # Maps existing_node_name -> [new chunk_ids to append]
+
         for node in graph_update.nodes:
+            # Check if a similar node already exists
+            similar = await self.deduplicator.find_similar_node(
+                node_name=node.name,
+                node_type=node.type or "",
+                user_id=user_id,
+                embedding=node.embedding
+            )
+
+            if similar:
+                # Map this node to the existing similar node
+                existing_node_name = similar["name"]
+                node_mapping[node.name] = existing_node_name
+
+                # Collect chunk_ids to append to the existing node
+                if node.chunk_ids:
+                    if existing_node_name not in chunk_ids_to_append:
+                        chunk_ids_to_append[existing_node_name] = []
+                    chunk_ids_to_append[existing_node_name].extend(node.chunk_ids)
+
+                logger.info(
+                    f"Merging node '{node.name}' into existing similar node '{existing_node_name}' "
+                    f"(score: {similar['score']:.3f})"
+                )
+            else:
+                # This is a genuinely new node
+                nodes_to_create.append(node)
+
+        # STEP 1.5: Append chunk_ids to existing nodes that had duplicates merged
+        for existing_node_name, new_chunk_ids in chunk_ids_to_append.items():
+            if new_chunk_ids:
+                await self.neo4j_manager.append_chunk_ids_to_node(
+                    node_name=existing_node_name,
+                    chunk_ids=new_chunk_ids,
+                    user_id=user_id
+                )
+                logger.debug(
+                    f"Appended {len(new_chunk_ids)} chunk_ids to existing node '{existing_node_name}'"
+                )
+
+        # STEP 2: Prepare data for nodes that will actually be created
+        nodes_data = []
+        for node in nodes_to_create:
             nodes_data.append({
                 "name": node.name,
                 "type": node.type or "",
-                "properties": node.properties or {}
+                "properties": node.properties or {},
+                "chunk_ids": node.chunk_ids if node.chunk_ids else []
             })
-            
-            # Add embedding data
+
+            # Add embedding data for new nodes
             if node.embedding:
                 embeddings_data.append({
                     "node_name": node.name,
                     "embedding": node.embedding
                 })
+
+        # STEP 3: Apply node mapping to relationships
+        # Replace any node names in relationships with their canonical equivalents
+        relationships_data = []
+        for rel in graph_update.relationships:
+            source = node_mapping.get(rel.source, rel.source)
+            target = node_mapping.get(rel.target, rel.target)
+            relationships_data.append({
+                "source": source,
+                "target": target,
+                "relation": rel.relation
+            })
+
+            # Log when we redirect a relationship
+            if rel.source != source or rel.target != target:
+                logger.debug(
+                    f"Redirected relationship: {rel.source}-[{rel.relation}]->{rel.target} "
+                    f"=> {source}-[{rel.relation}]->{target}"
+                )
         
-        # Process relationships
-        relationships_data = [{
-            "source": rel.source,
-            "target": rel.target,
-            "relation": rel.relation
-        } for rel in graph_update.relationships]
-        
-        # Calculate bloom levels for all affected nodes
+        # STEP 4: Calculate bloom levels for all affected nodes
         bloom_updates = []
-        
+
         # Create a lookup map for new nodes to preserve their LLM-extracted properties
-        new_nodes_map = {node.name: node.properties for node in graph_update.nodes}
+        # Use the actual node names that will be in the database (after mapping)
+        new_nodes_map = {}
+        for node in nodes_to_create:
+            new_nodes_map[node.name] = node.properties
+
+        # Start with nodes that will actually be created
+        affected_nodes = set([node.name for node in nodes_to_create])
+
+        # Add the existing nodes that had duplicates merged into them
+        affected_nodes.update(node_mapping.values())
         
-        affected_nodes = set([node.name for node in graph_update.nodes])
-        
-        # Get neighbors of new nodes to recalculate their bloom levels too
-        for node in graph_update.nodes:
+        # Get neighbors of affected nodes to recalculate their bloom levels too
+        # Only check relationships for nodes that already exist (mapped duplicates)
+        # New nodes don't have relationships yet, so skip them
+        for existing_node_name in node_mapping.values():
             try:
-                neighbors = await self.get_node_relationships(node.name, user_id)
+                neighbors = await self.get_node_relationships(existing_node_name, user_id)
                 affected_nodes.update([rel.target for rel in neighbors])
                 affected_nodes.update([rel.source for rel in neighbors])
             except Exception as e:
-                logger.debug(f"Could not get neighbors for {node.name}: {e}")
+                logger.debug(f"Could not get neighbors for {existing_node_name}: {e}")
         
         # Calculate bloom level for each affected node
         for node_name in affected_nodes:

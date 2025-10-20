@@ -1,11 +1,11 @@
-from typing import List
+from typing import List, Optional
 from .client_factory import get_embedding_client
 from server.logging_config import get_logger
 
 logger = get_logger(__name__)
 
 
-def generate_embeddings(texts: List[str], model: str = None) -> List[List[float]]:
+def generate_embeddings(texts: List[str], model: Optional[str] = None) -> List[List[float]]:
     """
     Generates embeddings for a list of texts using the configured LLM service.
     This is a synchronous function that wraps the async embedding generation.
@@ -40,10 +40,10 @@ def generate_embeddings(texts: List[str], model: str = None) -> List[List[float]
             
     except Exception as e:
         logger.error(f"Error generating embeddings: {e}")
-        return [None] * len(texts)  # Return a list of Nones to maintain alignment with input texts
+        return [[]] * len(texts)  # Return a list of empty lists to maintain alignment with input texts
 
 
-async def generate_embeddings_async(texts: List[str], model: str = None) -> List[List[float]]:
+async def generate_embeddings_async(texts: List[str], model: Optional[str] = None) -> List[List[float]]:
     """
     Async version of generate_embeddings.
     
@@ -62,4 +62,4 @@ async def generate_embeddings_async(texts: List[str], model: str = None) -> List
         return await client.embeddings(texts)
     except Exception as e:
         logger.error(f"Error generating embeddings: {e}")
-        return [None] * len(texts)  # Return a list of Nones to maintain alignment with input texts
+        return [[]] * len(texts)  # Return a list of empty lists to maintain alignment with input texts
