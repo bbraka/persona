@@ -118,19 +118,15 @@ class Neo4jConnectionManager:
                     "confidence": properties.get("confidence", 0.0)
                 }
 
-                # Handle chunk_ids array (new format) or chunk_id (legacy format)
+                # Handle chunk_ids array
                 chunk_ids = node.get("chunk_ids", [])
                 if chunk_ids:
                     query += ", n.chunk_ids = $chunk_ids"
                     params["chunk_ids"] = chunk_ids
-                elif properties.get("chunk_id"):
-                    # Legacy: single chunk_id, convert to array
-                    query += ", n.chunk_ids = $chunk_ids"
-                    params["chunk_ids"] = [properties.get("chunk_id")]
 
                 # Add custom properties dynamically (exclude standard PKG properties)
                 if properties:
-                    standard_props = {"discipline", "bloom_level", "confidence", "type", "chunk_id", "chunk_ids"}
+                    standard_props = {"discipline", "bloom_level", "confidence", "type", "chunk_ids"}
                     custom_props = {k: v for k, v in properties.items() if k not in standard_props}
 
                     logger.debug(f"Node {node['name']}: Found {len(custom_props)} custom properties: {list(custom_props.keys())}")
@@ -228,15 +224,11 @@ class Neo4jConnectionManager:
                         "confidence": properties.get("confidence", 0.0)
                     }
 
-                    # Handle chunk_ids array (new format) or chunk_id (legacy format)
+                    # Handle chunk_ids array
                     chunk_ids = node.get("chunk_ids", [])
                     if chunk_ids:
                         query += ", n.chunk_ids = $chunk_ids"
                         params["chunk_ids"] = chunk_ids
-                    elif properties.get("chunk_id"):
-                        # Legacy: single chunk_id, convert to array
-                        query += ", n.chunk_ids = $chunk_ids"
-                        params["chunk_ids"] = [properties.get("chunk_id")]
 
                     await tx.run(query, params) # type: ignore
                     logger.debug(f"Transaction: Created/updated node {node['name']}")
@@ -289,11 +281,11 @@ class Neo4jConnectionManager:
                         "confidence": props.get("confidence", 0.0)
                     }
 
-                    # Preserve chunk_id if present
-                    chunk_id = props.get("chunk_id")
-                    if chunk_id:
-                        query = query.rstrip() + ", n.chunk_id = $chunk_id\n                    "
-                        params["chunk_id"] = chunk_id
+                    # Preserve chunk_ids if present
+                    chunk_ids = props.get("chunk_ids")
+                    if chunk_ids:
+                        query = query.rstrip() + ", n.chunk_ids = $chunk_ids\n                    "
+                        params["chunk_ids"] = chunk_ids
 
                     await tx.run(query, params)
                     logger.debug(f"Transaction: Updated properties for {bloom_data['node_name']}")

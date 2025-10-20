@@ -90,12 +90,12 @@ class GraphOps:
 
         nodes_created = 0
         if nodes_to_create:
-            # Create nodes with names, properties, types, and chunk_id
+            # Create nodes with names, properties, types, and chunk_ids
             node_dicts = [{
                 "name": node.name,
                 "type": node.type or "",
                 "properties": node.properties or {},
-                "chunk_id": getattr(node, 'chunk_id', None)
+                "chunk_ids": getattr(node, 'chunk_ids', [])
             } for node in nodes_to_create]
             await self.neo4j_manager.create_nodes(node_dicts, user_id)
             nodes_created = len(nodes_to_create)

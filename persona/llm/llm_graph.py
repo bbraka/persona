@@ -13,8 +13,7 @@ logger = get_logger(__name__)
 class Node(BaseModel):
     name: str = Field(..., description="The node content - can be a simple label (e.g., 'Techno Music') or a narrative fragment (e.g., 'Deeply moved by classical music in empty spaces')")
     type: str = Field(..., description="The type/category of the node (e.g., 'Identity', 'Belief', 'Preference', 'Goal', 'Event', 'Relationship', etc.)")
-    chunk_id: Optional[str] = Field(None, description="Optional chunk ID linking this node to a specific book chapter section (will be converted to array)")
-    chunk_ids: Optional[List[str]] = Field(default_factory=list, description="Array of chunk IDs (preferred format)")
+    chunk_ids: Optional[List[str]] = Field(default_factory=list, description="Array of chunk IDs linking this node to multiple source sections")
     discipline: Optional[str] = Field(None, description="Academic/knowledge domain of the node")
     bloom_level: Optional[str] = Field(None, description="Bloom's taxonomy cognitive level")
     confidence: Optional[float] = Field(None, description="Extraction quality score (0.0-1.0)")
@@ -23,22 +22,18 @@ class Node(BaseModel):
     @model_validator(mode='after')
     def pack_properties(self) -> 'Node':
         """Pack discipline, bloom_level, and confidence into properties dict.
-        NOTE: chunk_id/chunk_ids are NOT packed into properties - they remain top-level."""
+        NOTE: chunk_ids are NOT packed into properties - they remain top-level."""
         # Ensure properties dict is initialized
         if self.properties is None:
             self.properties = {}
 
-        # Only pack non-chunk_id fields into properties
+        # Pack fields into properties
         if self.discipline is not None and 'discipline' not in self.properties:
             self.properties['discipline'] = self.discipline
         if self.bloom_level is not None and 'bloom_level' not in self.properties:
             self.properties['bloom_level'] = self.bloom_level
         if self.confidence is not None and 'confidence' not in self.properties:
             self.properties['confidence'] = self.confidence
-
-        # Convert chunk_id to chunk_ids array if needed
-        if self.chunk_id and not self.chunk_ids:
-            self.chunk_ids = [self.chunk_id]
 
         return self
 

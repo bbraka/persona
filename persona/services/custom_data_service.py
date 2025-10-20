@@ -15,17 +15,10 @@ class CustomDataService:
             # Convert CustomNodeData to NodeModel
             nodes = []
             for node in update.nodes:
-                # Handle chunk_id (legacy) or chunk_ids (new) from CustomNodeData
-                chunk_ids_list = []
-                if hasattr(node, 'chunk_ids') and node.chunk_ids:
-                    chunk_ids_list = node.chunk_ids
-                elif hasattr(node, 'chunk_id') and node.chunk_id:
-                    chunk_ids_list = [node.chunk_id]
-
                 nodes.append(NodeModel(
                     name=node.name,
                     type=node.type,
-                    chunk_ids=chunk_ids_list,  # Always use array
+                    chunk_ids=node.chunk_ids if node.chunk_ids else [],  # Always use array
                     properties=node.properties
                 ))
 

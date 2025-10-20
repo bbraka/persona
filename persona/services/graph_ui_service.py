@@ -147,7 +147,6 @@ class GraphUIService:
                 props.pop("discipline", None)
                 props.pop("bloom_level", None)
                 props.pop("confidence", None)
-                props.pop("chunk_id", None)  # Legacy
                 props.pop("chunk_ids", None)  # Already in top-level
 
                 # Remove embedding vector (never send to client)

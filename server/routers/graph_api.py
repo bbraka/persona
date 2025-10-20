@@ -292,7 +292,7 @@ async def get_graph_ui_data(
     - topics: Aggregated by discipline with entity counts, relationship counts, and Bloom level distribution
     - insights: High-confidence nodes (confidence >= 0.7)
     - sources: Aggregated by perspective or type
-    - nodes: All graph nodes with properties (including chunk_id if present, excluding embeddings)
+    - nodes: All graph nodes with properties (including chunk_ids array if present, excluding embeddings)
     - relationships: All graph relationships
     """
     try:
