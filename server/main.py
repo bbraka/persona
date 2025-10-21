@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from server.routers.graph_api import router as graph_api_router
 from server.logging_config import setup_logging, get_logger
 import asyncio
+import os
 
 from server.config import BaseConfig
 
@@ -15,6 +16,14 @@ config = BaseConfig()
 # Initialize logging
 setup_logging(log_level="INFO")
 logger = get_logger(__name__)
+
+# Enable remote debugging if DEBUG environment variable is set
+if os.getenv("DEBUG") == "true":
+    import debugpy
+    debugpy.listen(("0.0.0.0", 5678))
+    logger.info("⏳ Waiting for debugger to attach on port 5678...")
+    debugpy.wait_for_client()
+    logger.info("✅ Debugger attached!")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

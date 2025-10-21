@@ -194,6 +194,9 @@ INCLUDE exactly these fields per node:
   * 0.6-0.7 = Reasonable inference from available information
   * 0.4-0.5 = Weak signal or ambiguous data
   * Below 0.4 = Too speculative, avoid creating node
+- book_id: OPTIONAL - ONLY include if the node is extracted from a specific book. Use the book's unique id.  
+- highlight_id: OPTIONAL - ONLY include if the node is linked to a specific user highlight. Use the highlight's unique id.  
+- writing_id: OPTIONAL - ONLY include if the node is linked to a specific user writing project. Use the writing project's unique id.
 
 Node Types to Extract - CREATE SEPARATE NODES FOR EACH ENTITY:
 
@@ -337,6 +340,9 @@ NOTE: chunk_ids VALIDATION REQUIRED
       "name": "Betrayal by trusted colleagues",
       "type": "Concept",
       "chunk_ids": ["550e8400-e29b-41d4-a716-446655440000"],
+      "book_id": [27],
+      "highlight_id": [],
+      "writing_id": [],
       "discipline": "Psychology",
       "bloom_level": "Understand",
       "confidence": 0.95
@@ -345,6 +351,9 @@ NOTE: chunk_ids VALIDATION REQUIRED
       "name": "Justice versus revenge",
       "type": "Concept",
       "chunk_ids": ["550e8400-e29b-41d4-a716-446655440000"],
+      "book_id": [27],
+      "highlight_id": [456, 789],
+      "writing_id": [],
       "discipline": "Philosophy",
       "bloom_level": "Evaluate",
       "confidence": 0.9
@@ -352,6 +361,9 @@ NOTE: chunk_ids VALIDATION REQUIRED
     {
       "name": "Isolation transforms personality",
       "type": "Pattern",
+      "book_id": [27],
+      "highlight_id": [],
+      "writing_id": [],
       "discipline": "Psychology",
       "bloom_level": "Analyze",
       "confidence": 0.85
@@ -364,6 +376,14 @@ IMPORTANT NOTES:
 2. chunk_ids in examples above (["550e8400-e29b-41d4-a716-446655440000"]) is a VALID UUID array - notice the 8-4-4-4-12 hexadecimal pattern with hyphens
 3. If you receive chunk_ids values like ["80075"], ["12345"], or any plain numbers, these are INVALID - DO NOT include chunk_ids field for those nodes
 4. Always verify ALL values in chunk_ids array match UUID pattern before including it
+5. Entity ID fields (book_id, highlight_id, writing_id):
+   - These are OPTIONAL integer arrays that link nodes to source entities
+   - book_id: Array of book IDs the node is derived from (e.g., [27, 45])
+   - highlight_id: Array of highlight IDs the node is derived from (e.g., [123, 456])
+   - writing_id: Array of writing IDs the node is derived from (e.g., [789])
+   - Empty arrays [] are acceptable when no entity IDs are available
+   - A node can have multiple entity IDs if derived from multiple sources
+   - These help trace nodes back to their original source entities
 
 Example Response Format for USER DATA (NOTE: No chunk_ids for personal data):
 {

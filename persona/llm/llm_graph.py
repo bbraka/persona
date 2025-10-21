@@ -212,14 +212,33 @@ async def detect_communities(subgraphs_text: str) -> CommunityStructure:
 
 async def generate_structured_insights(ask_request: AskRequest, context: str) -> Dict[str, Any]:
     """
-    Generate structured insights based on the provided context and query using the configured LLM service
+    Generate structured insights based on the provided context and query using the configured LLM service.
+    Returns a message indicating no relevant context was found if context is empty.
     """
+    # Check if context is empty or only whitespace
+    if not context or not context.strip() or context.strip() == "# Relevant Graph Context":
+        logger.warning(f"No relevant context found for query: {ask_request.query}")
+
+        # Return error response in the expected schema format
+        error_response = {}
+        for key, value in ask_request.output_schema.items():
+            if isinstance(value, list):
+                error_response[key] = []
+            elif isinstance(value, dict):
+                error_response[key] = {"error": "No relevant context found in the knowledge graph"}
+            else:
+                error_response[key] = ""
+
+        return error_response
+
     prompt = f"""
+    IMPORTANT! DO NOT USE ANY INFORMATION OUTSIDE OF THE PROVIDED CONTEXT TO ANSWER THE QUERY.
+    
     Based on this context from the knowledge graph:
     {context}
-    
+
     Answer this query about the user: {ask_request.query}
-    
+
     Provide your response following the example structure:
     {json.dumps(ask_request.output_schema, indent=2)}
     """
@@ -231,15 +250,15 @@ async def generate_structured_insights(ask_request: AskRequest, context: str) ->
             ChatMessage(role="system", content=GENERATE_STRUCTURED_INSIGHTS),
             ChatMessage(role="user", content=prompt)
         ]
-        
+
         client = get_chat_client()
         response = await client.chat(
             messages=messages,
             response_format={"type": "json_object"}
         )
-        
+
         return json.loads(response.content)
-        
+
     except Exception as e:
         logger.error(f"Error in generate_structured_insights: {e}")
         return {k: [] if isinstance(v, list) else {} for k, v in ask_request.output_schema.items()}

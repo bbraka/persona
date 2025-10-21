@@ -1,4 +1,5 @@
-from fastapi import APIRouter, HTTPException, status, Path, Depends, Body, Response
+from typing import Optional
+from fastapi import APIRouter, HTTPException, status, Path, Depends, Body, Response, Query
 from persona.core.graph_ops import GraphOps, GraphContextRetriever
 from persona.models.schema import NodeModel, RelationshipModel, GraphUpdateModel
 from persona.core.constructor import GraphConstructor
@@ -283,17 +284,27 @@ async def update_custom_data(
 @router.get("/users/{user_id}/graph-ui-data", response_model=GraphUIDataResponse, status_code=status.HTTP_200_OK)
 async def get_graph_ui_data(
     user_id: str = Path(..., description="The unique identifier for the user"),
+    search: Optional[str] = Query(None, description="Search term to filter nodes by name or properties"),
+    topics: Optional[str] = Query(None, description="Comma-separated list of topics/disciplines to filter by"),
+    min_confidence: Optional[float] = Query(None, ge=0.0, le=1.0, description="Minimum confidence score for insights (0.0-1.0)"),
+    sources: Optional[str] = Query(None, description="Comma-separated list of sources/perspectives to filter by"),
     graph_ops: GraphOps = Depends(get_graph_ops)
 ):
     """
-    Retrieve comprehensive graph data for UI visualization.
+    Retrieve comprehensive graph data for UI visualization with optional filtering.
+
+    Query Parameters:
+    - search: Search term to filter nodes by name or properties (case-insensitive)
+    - topics: Comma-separated list of topics/disciplines to filter by (e.g., "Music,Art,Technology")
+    - min_confidence: Minimum confidence score for insights (default: 0.7)
+    - sources: Comma-separated list of sources/perspectives to filter by
 
     Returns:
     - topics: Aggregated by discipline with entity counts, relationship counts, and Bloom level distribution
-    - insights: High-confidence nodes (confidence >= 0.7)
+    - insights: High-confidence nodes (confidence >= min_confidence, default 0.7)
     - sources: Aggregated by perspective or type
-    - nodes: All graph nodes with properties (including chunk_ids array if present, excluding embeddings)
-    - relationships: All graph relationships
+    - nodes: Filtered graph nodes with properties (including chunk_ids array if present, excluding embeddings)
+    - relationships: Graph relationships connecting filtered nodes
     """
     try:
         if not is_valid_user_id(user_id):
@@ -304,8 +315,33 @@ async def get_graph_ui_data(
             logger.warning(f"Graph UI data requested for non-existent user: {user_id}")
             raise HTTPException(status_code=404, detail=f"User {user_id} not found")
 
-        logger.info(f"Fetching graph UI data for user {user_id}")
-        result = await GraphUIService.get_graph_ui_data(user_id, graph_ops)
+        # Parse and sanitize comma-separated filter parameters
+        topics_list = None
+        if topics:
+            topics_list = [t.strip() for t in topics.split(",") if t.strip()]
+            if not topics_list:
+                topics_list = None
+
+        sources_list = None
+        if sources:
+            sources_list = [s.strip() for s in sources.split(",") if s.strip()]
+            if not sources_list:
+                sources_list = None
+
+        # Sanitize search input (trim whitespace)
+        search_term = search.strip() if search else None
+        if search_term and len(search_term) == 0:
+            search_term = None
+
+        logger.info(f"Fetching graph UI data for user {user_id} with filters - search: {search_term}, topics: {topics_list}, min_confidence: {min_confidence}, sources: {sources_list}")
+        result = await GraphUIService.get_graph_ui_data(
+            user_id=user_id,
+            graph_ops=graph_ops,
+            search=search_term,
+            topics=topics_list,
+            min_confidence=min_confidence,
+            sources=sources_list
+        )
         logger.info(f"Graph UI data fetched successfully for user {user_id}")
         return result
 

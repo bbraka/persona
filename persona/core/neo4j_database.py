@@ -97,7 +97,7 @@ class Neo4jConnectionManager:
             for node in nodes:
                 # Store PKG properties as individual fields, not nested JSON
                 # Use node type as additional label for better visualization
-                node_type = node.get("type", "Unknown").replace(" ", "")
+                node_type = (node.get("type") or "Unknown").replace(" ", "")
                 properties = node.get("properties", {})
 
                 # Base query with standard fields
@@ -124,9 +124,16 @@ class Neo4jConnectionManager:
                     query += ", n.chunk_ids = $chunk_ids"
                     params["chunk_ids"] = chunk_ids
 
-                # Add custom properties dynamically (exclude standard PKG properties)
+                # Handle entity ID arrays (book_id, highlight_id, writing_id)
+                for id_field in ['book_id', 'highlight_id', 'writing_id']:
+                    ids = node.get(id_field, [])
+                    if ids:
+                        query += f", n.{id_field} = ${id_field}"
+                        params[id_field] = ids
+
+                # Add custom properties dynamically (exclude standard PKG properties and entity IDs)
                 if properties:
-                    standard_props = {"discipline", "bloom_level", "confidence", "type", "chunk_ids"}
+                    standard_props = {"discipline", "bloom_level", "confidence", "type", "chunk_ids", "book_id", "highlight_id", "writing_id"}
                     custom_props = {k: v for k, v in properties.items() if k not in standard_props}
 
                     logger.debug(f"Node {node['name']}: Found {len(custom_props)} custom properties: {list(custom_props.keys())}")
@@ -206,7 +213,7 @@ class Neo4jConnectionManager:
                 for node in nodes:
                     # Store PKG properties as individual fields
                     # Use node type as additional label for better visualization
-                    node_type = node.get("type", "Unknown").replace(" ", "")
+                    node_type = (node.get("type") or "Unknown").replace(" ", "")
                     query = (
                         f"MERGE (n:NodeName:`{node_type}` {{name: $name, UserId: $user_id}}) "
                         "SET n.type = $type, "
@@ -229,6 +236,13 @@ class Neo4jConnectionManager:
                     if chunk_ids:
                         query += ", n.chunk_ids = $chunk_ids"
                         params["chunk_ids"] = chunk_ids
+
+                    # Handle entity ID arrays (book_id, highlight_id, writing_id)
+                    for id_field in ['book_id', 'highlight_id', 'writing_id']:
+                        ids = node.get(id_field, [])
+                        if ids:
+                            query += f", n.{id_field} = ${id_field}"
+                            params[id_field] = ids
 
                     await tx.run(query, params) # type: ignore
                     logger.debug(f"Transaction: Created/updated node {node['name']}")

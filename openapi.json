@@ -1,0 +1,840 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Persona API",
+    "description": "Backend API for Persona",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/v1/version": {
+      "get": {
+        "summary": "Get Version",
+        "operationId": "get_version_api_v1_version_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/{user_id}": {
+      "post": {
+        "summary": "Create User",
+        "operationId": "create_user_api_v1_users__user_id__post",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The unique identifier for the user",
+              "title": "User Id"
+            },
+            "description": "The unique identifier for the user"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete User",
+        "description": "Delete an existing user from the system",
+        "operationId": "delete_user_api_v1_users__user_id__delete",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The unique identifier for the user",
+              "title": "User Id"
+            },
+            "description": "The unique identifier for the user"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/{user_id}/ingest": {
+      "post": {
+        "summary": "Ingest Data",
+        "operationId": "ingest_data_api_v1_users__user_id__ingest_post",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The unique identifier for the user",
+              "title": "User Id"
+            },
+            "description": "The unique identifier for the user"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UnstructuredData"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/{user_id}/rag/query": {
+      "post": {
+        "summary": "Rag Query",
+        "operationId": "rag_query_api_v1_users__user_id__rag_query_post",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The unique identifier for the user",
+              "title": "User Id"
+            },
+            "description": "The unique identifier for the user"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RAGQuery"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RAGResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/{user_id}/rag/query-vector": {
+      "post": {
+        "summary": "Rag Query Vector",
+        "operationId": "rag_query_vector_api_v1_users__user_id__rag_query_vector_post",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The unique identifier for the user",
+              "title": "User Id"
+            },
+            "description": "The unique identifier for the user"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RAGQuery"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/{user_id}/ask": {
+      "post": {
+        "summary": "Ask Insights",
+        "operationId": "ask_insights_api_v1_users__user_id__ask_post",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The unique identifier for the user",
+              "title": "User Id"
+            },
+            "description": "The unique identifier for the user"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/{user_id}/custom-data": {
+      "post": {
+        "summary": "Update Custom Data",
+        "description": "Update or create custom structured data in the graph",
+        "operationId": "update_custom_data_api_v1_users__user_id__custom_data_post",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The unique identifier for the user",
+              "title": "User Id"
+            },
+            "description": "The unique identifier for the user"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CustomGraphUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/{user_id}/graph-ui-data": {
+      "get": {
+        "summary": "Get Graph Ui Data",
+        "description": "Retrieve comprehensive graph data for UI visualization with optional filtering.\n\nQuery Parameters:\n- search: Search term to filter nodes by name or properties (case-insensitive)\n- topics: Comma-separated list of topics/disciplines to filter by (e.g., \"Music,Art,Technology\")\n- min_confidence: Minimum confidence score for insights (default: 0.7)\n- sources: Comma-separated list of sources/perspectives to filter by\n\nReturns:\n- topics: Aggregated by discipline with entity counts, relationship counts, and Bloom level distribution\n- insights: High-confidence nodes (confidence >= min_confidence, default 0.7)\n- sources: Aggregated by perspective or type\n- nodes: Filtered graph nodes with properties (including chunk_ids array if present, excluding embeddings)\n- relationships: Graph relationships connecting filtered nodes",
+        "operationId": "get_graph_ui_data_api_v1_users__user_id__graph_ui_data_get",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The unique identifier for the user",
+              "title": "User Id"
+            },
+            "description": "The unique identifier for the user"
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Search term to filter nodes by name or properties",
+              "title": "Search"
+            },
+            "description": "Search term to filter nodes by name or properties"
+          },
+          {
+            "name": "topics",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated list of topics/disciplines to filter by",
+              "title": "Topics"
+            },
+            "description": "Comma-separated list of topics/disciplines to filter by"
+          },
+          {
+            "name": "min_confidence",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "maximum": 1.0,
+                  "minimum": 0.0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Minimum confidence score for insights (0.0-1.0)",
+              "title": "Min Confidence"
+            },
+            "description": "Minimum confidence score for insights (0.0-1.0)"
+          },
+          {
+            "name": "sources",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated list of sources/perspectives to filter by",
+              "title": "Sources"
+            },
+            "description": "Comma-separated list of sources/perspectives to filter by"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphUIDataResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AskRequest": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query"
+          },
+          "output_schema": {
+            "type": "object",
+            "title": "Output Schema",
+            "description": "Expected output structure with example values"
+          }
+        },
+        "type": "object",
+        "required": [
+          "query",
+          "output_schema"
+        ],
+        "title": "AskRequest"
+      },
+      "AskResponse": {
+        "properties": {
+          "result": {
+            "type": "object",
+            "title": "Result"
+          }
+        },
+        "type": "object",
+        "required": [
+          "result"
+        ],
+        "title": "AskResponse"
+      },
+      "CustomGraphUpdate": {
+        "properties": {
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/CustomNodeData"
+            },
+            "type": "array",
+            "title": "Nodes"
+          },
+          "relationships": {
+            "items": {
+              "$ref": "#/components/schemas/CustomRelationshipData"
+            },
+            "type": "array",
+            "title": "Relationships"
+          }
+        },
+        "type": "object",
+        "required": [
+          "nodes",
+          "relationships"
+        ],
+        "title": "CustomGraphUpdate",
+        "example": {
+          "nodes": [
+            {
+              "name": "Favorite Movie",
+              "perspective": "user preference",
+              "properties": {
+                "genre": "Sci-Fi",
+                "rating": "9/10"
+              }
+            }
+          ],
+          "relationships": [
+            {
+              "data": {
+                "confidence": 0.9
+              },
+              "relation_type": "IS",
+              "source": "Favorite Movie",
+              "target": "Interstellar"
+            }
+          ]
+        }
+      },
+      "CustomNodeData": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "perspective": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Perspective"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Type"
+          },
+          "chunk_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chunk Ids",
+            "description": "Array of chunk IDs linking this node to multiple source sections"
+          },
+          "properties": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Properties"
+          },
+          "embedding": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding",
+            "description": "Embedding vector for the node, if applicable"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "CustomNodeData",
+        "example": {
+          "chunk_ids": [
+            "book_27_chapter_1",
+            "book_27_chapter_5"
+          ],
+          "embedding": [
+            0.1,
+            0.2,
+            0.3
+          ],
+          "name": "Quantum Computing",
+          "properties": {
+            "discipline": "Computer Science",
+            "bloom_level": "Understand",
+            "confidence": "0.9"
+          },
+          "type": "Concept"
+        }
+      },
+      "CustomRelationshipData": {
+        "properties": {
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "target": {
+            "type": "string",
+            "title": "Target"
+          },
+          "relation_type": {
+            "type": "string",
+            "title": "Relation Type"
+          },
+          "data": {
+            "type": "object",
+            "title": "Data"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source",
+          "target",
+          "relation_type"
+        ],
+        "title": "CustomRelationshipData"
+      },
+      "GraphUIDataResponse": {
+        "properties": {
+          "topics": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Topics"
+          },
+          "insights": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Insights"
+          },
+          "sources": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Sources"
+          },
+          "nodes": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Nodes"
+          },
+          "relationships": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Relationships"
+          }
+        },
+        "type": "object",
+        "required": [
+          "topics",
+          "insights",
+          "sources",
+          "nodes",
+          "relationships"
+        ],
+        "title": "GraphUIDataResponse"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "RAGQuery": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query"
+          }
+        },
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "title": "RAGQuery"
+      },
+      "RAGResponse": {
+        "properties": {
+          "answer": {
+            "type": "string",
+            "title": "Answer"
+          }
+        },
+        "type": "object",
+        "required": [
+          "answer"
+        ],
+        "title": "RAGResponse"
+      },
+      "UnstructuredData": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          },
+          "chunk_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chunk Ids",
+            "description": "Array of chunk IDs linking this data to source sections"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "required": [
+          "title",
+          "content"
+        ],
+        "title": "UnstructuredData"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

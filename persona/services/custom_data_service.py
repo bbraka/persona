@@ -2,7 +2,10 @@ from persona.core.graph_ops import GraphOps
 from persona.models.schema import CustomGraphUpdate, CustomNodeData, CustomRelationshipData, NodesAndRelationshipsResponse
 from persona.models.schema import NodeModel, RelationshipModel
 from typing import Dict, Any
-    
+from server.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 class CustomDataService:
     def __init__(self, graph_ops: GraphOps):
         self.graph_ops = graph_ops
@@ -15,11 +18,24 @@ class CustomDataService:
             # Convert CustomNodeData to NodeModel
             nodes = []
             for node in update.nodes:
+                # Merge perspective into properties if it exists
+                node_properties = node.properties.copy() if node.properties else {}
+                if node.perspective:
+                    node_properties['perspective'] = node.perspective
+
+                # Extract entity IDs from properties if present
+                book_id = node_properties.pop('book_id', [])
+                highlight_id = node_properties.pop('highlight_id', [])
+                writing_id = node_properties.pop('writing_id', [])
+
                 nodes.append(NodeModel(
                     name=node.name,
                     type=node.type,
                     chunk_ids=node.chunk_ids if node.chunk_ids else [],  # Always use array
-                    properties=node.properties
+                    book_id=book_id if isinstance(book_id, list) else [],
+                    highlight_id=highlight_id if isinstance(highlight_id, list) else [],
+                    writing_id=writing_id if isinstance(writing_id, list) else [],
+                    properties=node_properties
                 ))
 
             # Convert CustomRelationshipData to RelationshipModel
@@ -40,7 +56,6 @@ class CustomDataService:
                 ),
                 user_id
             )
-            
             return {
                 "status": "success",
                 "message": f"Updated {len(nodes)} nodes and {len(relationships)} relationships"
