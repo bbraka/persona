@@ -14,6 +14,9 @@ class Node(BaseModel):
     name: str = Field(..., description="The node content - can be a simple label (e.g., 'Techno Music') or a narrative fragment (e.g., 'Deeply moved by classical music in empty spaces')")
     type: str = Field(..., description="The type/category of the node (e.g., 'Identity', 'Belief', 'Preference', 'Goal', 'Event', 'Relationship', etc.)")
     chunk_ids: Optional[List[str]] = Field(default_factory=list, description="Array of chunk IDs linking this node to multiple source sections")
+    book_id: Optional[List[int]] = Field(default_factory=list, description="Array of book IDs associated with this node")
+    highlight_id: Optional[List[int]] = Field(default_factory=list, description="Array of highlight IDs associated with this node")
+    writing_id: Optional[List[int]] = Field(default_factory=list, description="Array of writing IDs associated with this node")
     discipline: Optional[str] = Field(None, description="Academic/knowledge domain of the node")
     bloom_level: Optional[str] = Field(None, description="Bloom's taxonomy cognitive level")
     confidence: Optional[float] = Field(None, description="Extraction quality score (0.0-1.0)")
@@ -233,7 +236,7 @@ async def generate_structured_insights(ask_request: AskRequest, context: str) ->
 
     prompt = f"""
     IMPORTANT! DO NOT USE ANY INFORMATION OUTSIDE OF THE PROVIDED CONTEXT TO ANSWER THE QUERY.
-    
+
     Based on this context from the knowledge graph:
     {context}
 

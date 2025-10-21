@@ -139,8 +139,9 @@ SPACE_SCHOOL_CHAT = """
 """
 
 GET_NODES = """
-You are a knowledge extraction expert and your task is to extract reusable, generalizable concepts that build a Personal Knowledge Graph (PKG).
-You will be given streams of unstructured data (conversations, book content, articles, etc.) and output extracted nodes as JSON.
+You are an assistant that extracts structured knowledge from text to build a Personal Knowledge Graph (PKG).
+Your task is to identify key entities and concepts from the provided text (book highlights, notes, conversations, writing projects, etc.) and return them as JSON nodes.
+Each node should represent a reusable concept that can connect across different sources and contexts.
 IMPORTANT: You must respond with valid JSON format only.
 
 ⚠️ CRITICAL: chunk_ids VALIDATION RULE ⚠️
@@ -198,7 +199,12 @@ INCLUDE exactly these fields per node:
 - highlight_id: OPTIONAL - ONLY include if the node is linked to a specific user highlight. Use the highlight's unique id.  
 - writing_id: OPTIONAL - ONLY include if the node is linked to a specific user writing project. Use the writing project's unique id.
 
-Node Types to Extract - CREATE SEPARATE NODES FOR EACH ENTITY:
+What to Extract - CREATE SEPARATE NODES FOR EACH ENTITY:
+
+For each entity or concept in the text, create an individual node with:
+- Name: Concise identifier for the entity
+- Type: Category (see types below)
+- A brief description or definition in context (stored in properties)
 
 FOR BOOK/ARTICLE CONTENT - Extract ALL entities as individual nodes:
 
@@ -422,9 +428,12 @@ Example Response Format for USER DATA (NOTE: No chunk_ids for personal data):
 """
 
 GET_RELATIONSHIPS = """
-You are an expert in understanding human cognitive patterns and meaningful connections. Your task is to identify only the most significant and natural relationships between concepts in a user's cognitive map.
-IMPORTANT: You must respond with valid JSON format only.
+You are an assistant that identifies meaningful relationships between entities in a knowledge graph.
 
+Given a list of nodes, determine if there are meaningful relationships between them and specify the relationship type.
+Return only relationships that add valuable context and help understand connections in the user's knowledge.
+
+IMPORTANT: You must respond with valid JSON format only.
 CRITICAL: You will receive a list of nodes with temporary IDs (Node1, Node2, etc.). You MUST use these exact IDs in your relationships, NOT the node names.
 
 Guidelines for Creating Relationships:
@@ -635,9 +644,34 @@ Example Response Format:
 """
 
 GENERATE_STRUCTURED_INSIGHTS = """
-You are an expert in user psychology and personal knowledge graphs. Your goal is to generate structured insights based on a user's query and context.
-You will be provided with a user's query and context, and a schema for the expected output.
-Your task is to generate a response that matches the schema. If you are unsure about the answer, don't make assumptions or fill in with placeholder values.
-If you're unable to generate a response that matches the schema, return an empty dictionary.
-Important: Your response must exactly match the JSON schema provided by the user. 
+You are an assistant that answers questions and generates insights using information from a knowledge graph.
+
+You will be provided with:
+- User's question or query: What the user wants to know or analyze
+- Relevant context: Facts, concepts, relationships, and data retrieved from the knowledge graph
+- Output schema: The expected JSON structure for your response
+
+Your capabilities include:
+1. **Question Answering**: Answer questions using only the knowledge graph data provided
+   - Use facts, concepts, and relationships from the graph
+   - If information is insufficient, indicate this clearly
+   - Cite specific concepts or relationships when relevant
+   - Be concise and accurate
+
+2. **Knowledge Gap Analysis**: When asked about learning recommendations or knowledge gaps
+   - Analyze the user's existing knowledge (provided in context)
+   - Identify related concepts or topics not yet covered
+   - Suggest 2-3 valuable areas to explore next
+   - Explain why each suggestion is relevant
+
+3. **Structured Data Extraction**: Generate any structured output that matches the provided schema
+   - Extract insights, patterns, or summaries from the context
+   - Follow the exact JSON schema format provided
+   - Don't add information not present in the context
+
+Important rules:
+- Your response must exactly match the JSON schema provided by the user
+- Don't make assumptions or invent information beyond what's in the context
+- If you cannot answer based on the provided knowledge, say so clearly in the response
+- Use only the knowledge graph data provided - do not use external knowledge
 """

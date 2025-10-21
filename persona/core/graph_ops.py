@@ -100,6 +100,7 @@ class GraphOps:
                 "highlight_id": getattr(node, 'highlight_id', []),
                 "writing_id": getattr(node, 'writing_id', [])
             } for node in nodes_to_create]
+
             await self.neo4j_manager.create_nodes(node_dicts, user_id)
             nodes_created = len(nodes_to_create)
 
@@ -255,6 +256,7 @@ class GraphOps:
         nodes_to_create = []
         embeddings_data = []
         chunk_ids_to_append = {}  # Maps existing_node_name -> [new chunk_ids to append]
+        entity_ids_to_append = {}  # Maps existing_node_name -> {book_ids: [], highlight_ids: [], writing_ids: []}
 
         for node in graph_update.nodes:
             # Check if a similar node already exists
@@ -276,6 +278,21 @@ class GraphOps:
                         chunk_ids_to_append[existing_node_name] = []
                     chunk_ids_to_append[existing_node_name].extend(node.chunk_ids)
 
+                # Collect entity IDs to append to the existing node
+                if existing_node_name not in entity_ids_to_append:
+                    entity_ids_to_append[existing_node_name] = {
+                        'book_ids': [],
+                        'highlight_ids': [],
+                        'writing_ids': []
+                    }
+
+                if node.book_id:
+                    entity_ids_to_append[existing_node_name]['book_ids'].extend(node.book_id)
+                if node.highlight_id:
+                    entity_ids_to_append[existing_node_name]['highlight_ids'].extend(node.highlight_id)
+                if node.writing_id:
+                    entity_ids_to_append[existing_node_name]['writing_ids'].extend(node.writing_id)
+
                 logger.info(
                     f"Merging node '{node.name}' into existing similar node '{existing_node_name}' "
                     f"(score: {similar['score']:.3f})"
@@ -284,7 +301,7 @@ class GraphOps:
                 # This is a genuinely new node
                 nodes_to_create.append(node)
 
-        # STEP 1.5: Append chunk_ids to existing nodes that had duplicates merged
+        # STEP 1.5: Append chunk_ids and entity IDs to existing nodes that had duplicates merged
         for existing_node_name, new_chunk_ids in chunk_ids_to_append.items():
             if new_chunk_ids:
                 await self.neo4j_manager.append_chunk_ids_to_node(
@@ -296,6 +313,16 @@ class GraphOps:
                     f"Appended {len(new_chunk_ids)} chunk_ids to existing node '{existing_node_name}'"
                 )
 
+        for existing_node_name, entity_ids in entity_ids_to_append.items():
+            if entity_ids['book_ids'] or entity_ids['highlight_ids'] or entity_ids['writing_ids']:
+                await self.neo4j_manager.append_entity_ids_to_node(
+                    node_name=existing_node_name,
+                    book_ids=entity_ids['book_ids'],
+                    highlight_ids=entity_ids['highlight_ids'],
+                    writing_ids=entity_ids['writing_ids'],
+                    user_id=user_id
+                )
+
         # STEP 2: Prepare data for nodes that will actually be created
         nodes_data = []
         for node in nodes_to_create:
@@ -303,7 +330,10 @@ class GraphOps:
                 "name": node.name,
                 "type": node.type or "",
                 "properties": node.properties or {},
-                "chunk_ids": node.chunk_ids if node.chunk_ids else []
+                "chunk_ids": node.chunk_ids if node.chunk_ids else [],
+                "book_id": node.book_id if node.book_id else [],
+                "highlight_id": node.highlight_id if node.highlight_id else [],
+                "writing_id": node.writing_id if node.writing_id else []
             })
 
             # Add embedding data for new nodes

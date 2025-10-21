@@ -44,8 +44,8 @@ class GraphConstructor:
             raise RuntimeError("GraphConstructor must be used as an async context manager")
         text = self.preprocess_data(data)
         
-        # Extract new nodes from the content
-        new_nodes = await self.extract_nodes(text)
+        # Extract new nodes from the content (pass metadata for entity IDs)
+        new_nodes = await self.extract_nodes(text, data.metadata or {})
         if not new_nodes:
             logger.info("No new nodes generated from the unstructured data.")
             return
@@ -86,6 +86,9 @@ class GraphConstructor:
                 name=node.name,
                 type=node.type,
                 chunk_ids=node.chunk_ids if node.chunk_ids else [],  # Always an array
+                book_id=node.book_id if node.book_id else [],
+                highlight_id=node.highlight_id if node.highlight_id else [],
+                writing_id=node.writing_id if node.writing_id else [],
                 properties=properties,
                 embedding=embedding
             ))
@@ -124,14 +127,63 @@ class GraphConstructor:
             preprocessed += "\n".join([f"{k}: {v}" for k, v in data.metadata.items()])
         return preprocessed
 
-    async def extract_nodes(self, text: str) -> List[Node]:
+    async def extract_nodes(self, text: str, metadata: Dict[str, str] = {}) -> List[Node]:
         """
         Extract nodes from the unstructured text.
+        Entity IDs (book_id, highlight_id, writing_id) and chunk_ids from metadata are applied to all extracted nodes.
         """
         graph_context = await self.get_relevant_graph_context(user_id=self.user_id, nodes=[])
         llm_nodes = await get_nodes(text, graph_context)
-        # Convert LLM nodes to schema nodes
-        return [Node(name=node.name, type=node.type, chunk_ids=getattr(node, 'chunk_ids', []), discipline=getattr(node, 'discipline', ''), bloom_level=getattr(node, 'bloom_level', ''), confidence=getattr(node, 'confidence', 0.0)) for node in llm_nodes]
+
+        # Extract chunk_ids from metadata (comma-separated string to array)
+        chunk_ids_from_metadata = []
+        if 'chunk_ids' in metadata:
+            # Can be comma-separated string: "uuid1,uuid2,uuid3"
+            chunk_str = metadata['chunk_ids'].strip()
+            if chunk_str:
+                chunk_ids_from_metadata = [chunk.strip() for chunk in chunk_str.split(',')]
+
+        # Extract entity IDs from metadata (convert string values to int arrays)
+        book_ids = []
+        if 'book_id' in metadata:
+            try:
+                book_ids = [int(metadata['book_id'])]
+            except (ValueError, TypeError) as e:
+                logger.error(f"Failed to convert book_id from metadata: {e}")
+
+        highlight_ids = []
+        if 'highlight_id' in metadata:
+            try:
+                highlight_ids = [int(metadata['highlight_id'])]
+            except (ValueError, TypeError):
+                pass
+
+        writing_ids = []
+        if 'writing_id' in metadata:
+            try:
+                writing_ids = [int(metadata['writing_id'])]
+            except (ValueError, TypeError):
+                pass
+
+        # Convert LLM nodes to schema nodes, applying IDs from metadata
+        nodes = []
+        for node in llm_nodes:
+            llm_book_id = getattr(node, 'book_id', [])
+            final_book_id = llm_book_id or book_ids
+
+            nodes.append(Node(
+                name=node.name,
+                type=node.type,
+                chunk_ids=getattr(node, 'chunk_ids', []) or chunk_ids_from_metadata,
+                book_id=final_book_id,
+                highlight_id=getattr(node, 'highlight_id', []) or highlight_ids,
+                writing_id=getattr(node, 'writing_id', []) or writing_ids,
+                discipline=getattr(node, 'discipline', ''),
+                bloom_level=getattr(node, 'bloom_level', ''),
+                confidence=getattr(node, 'confidence', 0.0)
+            ))
+
+        return nodes
 
     async def generate_relationships(self, nodes: List[Node], context_description: str = "") -> List[Relationship]:
         """
@@ -145,6 +197,9 @@ class GraphConstructor:
                 name=node.name,
                 type=node.type,
                 chunk_ids=node.chunk_ids,
+                book_id=node.book_id,
+                highlight_id=node.highlight_id,
+                writing_id=node.writing_id,
                 discipline=node.discipline,
                 bloom_level=node.bloom_level,
                 confidence=node.confidence
@@ -165,6 +220,9 @@ class GraphConstructor:
                 name=node.name,
                 type=node.type,
                 chunk_ids=node.chunk_ids,
+                book_id=node.book_id,
+                highlight_id=node.highlight_id,
+                writing_id=node.writing_id,
                 discipline=node.discipline,
                 bloom_level=node.bloom_level,
                 confidence=node.confidence
@@ -187,7 +245,7 @@ class GraphConstructor:
             return []
             
         # Convert NodeModel instances to Node instances for the LLM
-        nodes_for_llm = [LLMNode(name=node.name, type="Unknown", chunk_ids=[], discipline="", bloom_level="", confidence=0.0) for node in existing_nodes]  # Add required type field
+        nodes_for_llm = [LLMNode(name=node.name, type="Unknown", chunk_ids=[], discipline="", bloom_level="", confidence=0.0, book_id=[], highlight_id=[], writing_id=[]) for node in existing_nodes]  # Add required type field
         
         # Use the new context to find new relationships
         combined_context = f"New Information:\n{new_context}\n\nExisting Knowledge:\n{existing_context}"

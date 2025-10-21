@@ -125,11 +125,11 @@ class Neo4jConnectionManager:
                     params["chunk_ids"] = chunk_ids
 
                 # Handle entity ID arrays (book_id, highlight_id, writing_id)
+                # Always set these fields, even if empty, to ensure they exist in the database
                 for id_field in ['book_id', 'highlight_id', 'writing_id']:
                     ids = node.get(id_field, [])
-                    if ids:
-                        query += f", n.{id_field} = ${id_field}"
-                        params[id_field] = ids
+                    query += f", n.{id_field} = ${id_field}"
+                    params[id_field] = ids
 
                 # Add custom properties dynamically (exclude standard PKG properties and entity IDs)
                 if properties:
@@ -238,11 +238,11 @@ class Neo4jConnectionManager:
                         params["chunk_ids"] = chunk_ids
 
                     # Handle entity ID arrays (book_id, highlight_id, writing_id)
+                    # Always set these fields, even if empty, to ensure they exist in the database
                     for id_field in ['book_id', 'highlight_id', 'writing_id']:
                         ids = node.get(id_field, [])
-                        if ids:
-                            query += f", n.{id_field} = ${id_field}"
-                            params[id_field] = ids
+                        query += f", n.{id_field} = ${id_field}"
+                        params[id_field] = ids
 
                     await tx.run(query, params) # type: ignore
                     logger.debug(f"Transaction: Created/updated node {node['name']}")
@@ -496,6 +496,70 @@ class Neo4jConnectionManager:
             if data:
                 logger.debug(
                     f"Node '{node_name}' now has {data['total_chunks']} chunk_ids after appending {len(chunk_ids)}"
+                )
+
+    async def append_entity_ids_to_node(
+        self,
+        node_name: str,
+        book_ids: List[int],
+        highlight_ids: List[int],
+        writing_ids: List[int],
+        user_id: str
+    ) -> None:
+        """
+        Append entity IDs (book_id, highlight_id, writing_id) to an existing node's arrays.
+        This is used when merging similar nodes - we want to preserve all source entity references.
+
+        Args:
+            node_name: Name of the node to update
+            book_ids: List of book IDs to append
+            highlight_ids: List of highlight IDs to append
+            writing_ids: List of writing IDs to append
+            user_id: User ID
+        """
+        if not await self.user_exists(user_id):
+            logger.warning(f"User {user_id} does not exist. Cannot append entity IDs.")
+            return
+
+        if not book_ids and not highlight_ids and not writing_ids:
+            return
+
+        async with self._ensure_driver().session() as session:
+            # Use Cypher to append to arrays, removing duplicates
+            query = """
+            MATCH (n:NodeName {name: $node_name, UserId: $user_id})
+            WITH n,
+                 COALESCE(n.book_id, []) as existing_book_ids,
+                 COALESCE(n.highlight_id, []) as existing_highlight_ids,
+                 COALESCE(n.writing_id, []) as existing_writing_ids
+            WITH n,
+                 existing_book_ids + [id IN $new_book_ids WHERE NOT id IN existing_book_ids] as updated_book_ids,
+                 existing_highlight_ids + [id IN $new_highlight_ids WHERE NOT id IN existing_highlight_ids] as updated_highlight_ids,
+                 existing_writing_ids + [id IN $new_writing_ids WHERE NOT id IN existing_writing_ids] as updated_writing_ids
+            SET n.book_id = updated_book_ids,
+                n.highlight_id = updated_highlight_ids,
+                n.writing_id = updated_writing_ids
+            RETURN size(n.book_id) as total_book_ids,
+                   size(n.highlight_id) as total_highlight_ids,
+                   size(n.writing_id) as total_writing_ids
+            """
+
+            result = await session.run(
+                query,
+                node_name=node_name,
+                user_id=user_id,
+                new_book_ids=book_ids,
+                new_highlight_ids=highlight_ids,
+                new_writing_ids=writing_ids
+            )
+
+            data = await result.single()
+            if data:
+                logger.debug(
+                    f"Appended entity IDs to node '{node_name}': "
+                    f"{data['total_book_ids']} book_ids, "
+                    f"{data['total_highlight_ids']} highlight_ids, "
+                    f"{data['total_writing_ids']} writing_ids"
                 )
 
     async def get_node_data(self, node_name: str, user_id: str) -> Optional[Dict[str, Any]]:
