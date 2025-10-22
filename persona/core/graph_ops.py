@@ -165,17 +165,30 @@ class GraphOps:
         return [RelationshipModel(source=rel["source"], target=rel["target"], relation=rel["relation"]) 
                 for rel in relationships]
 
-    async def text_similarity_search(self, query: str, user_id: str, limit: int = 5, threshold: float = 0.7, index_name: str = "embeddings_index") -> Dict[str, Any]:
+    async def text_similarity_search(
+        self,
+        query: str,
+        user_id: str,
+        limit: int = 5,
+        threshold: float = 0.7,
+        index_name: str = "embeddings_index",
+        book_id: Optional[int] = None,
+        highlight_id: Optional[int] = None,
+        writing_id: Optional[int] = None
+    ) -> Dict[str, Any]:
         """
         Perform a similarity search on the graph based on a text query.
-        
+
         Args:
             query: Text query to search for
             user_id: User ID to filter results by
             limit: Maximum number of results to return after filtering (default: 5)
             threshold: Minimum similarity score to include (0.0-1.0, default: 0.7)
             index_name: Name of the vector index to query
-            
+            book_id: Optional book ID to filter results
+            highlight_id: Optional highlight ID to filter results
+            writing_id: Optional writing ID to filter results
+
         Returns:
             Dictionary with query and filtered results
         """
@@ -189,12 +202,35 @@ class GraphOps:
             return {"query": query, "results": []}
 
         logger.debug(f"Performing similarity search for the query: '{query}' for user ID: '{user_id}'")
-        # Fetch more results than limit to account for threshold filtering
-        fetch_limit = max(limit * 3, 20)  # Fetch 3x limit or at least 20 results
-        results = await self.neo4j_manager.query_text_similarity(query_embeddings[0], user_id, limit=fetch_limit)
 
-        # Filter by threshold and apply limit
-        filtered = [r for r in results if r["score"] >= threshold][:limit]
+        # When entity IDs are provided, use a lower threshold since we're already pre-filtering
+        # The manual cosine calculation produces different score ranges than the vector index
+        has_entity_filter = book_id is not None or highlight_id is not None or writing_id is not None
+        if has_entity_filter:
+            # Lower threshold for entity-filtered queries (manual cosine scores tend to be lower)
+            effective_threshold = 0.0  # Return all results from pre-filtered set, sorted by relevance
+            fetch_limit = max(limit * 10, 100)  # Fetch more to account for threshold
+            logger.info(f"Entity-filtered search with threshold={effective_threshold}")
+        else:
+            # Standard threshold for vector index queries
+            effective_threshold = threshold
+            fetch_limit = max(limit * 5, 50)
+
+        results = await self.neo4j_manager.query_text_similarity(
+            query_embeddings[0],
+            user_id,
+            limit=fetch_limit,
+            book_id=book_id,
+            highlight_id=highlight_id,
+            writing_id=writing_id
+        )
+
+        # Filter by effective threshold and apply limit
+        if results and has_entity_filter:
+            logger.info(f"Entity search returned {len(results)} results, top score: {results[0]['score'] if results else 0:.3f}")
+
+        filtered = [r for r in results if r["score"] >= effective_threshold][:limit]
+
         return {
             "query": query,
             "results": [

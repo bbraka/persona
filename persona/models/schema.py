@@ -180,6 +180,9 @@ class LearnResponse(BaseModel):
 class AskRequest(BaseModel):
     query: str
     output_schema: Dict[str, Any] = Field(..., description="Expected output structure with example values")
+    book_id: Optional[int] = Field(None, description="Filter context by book ID")
+    highlight_id: Optional[int] = Field(None, description="Filter context by highlight ID")
+    writing_id: Optional[int] = Field(None, description="Filter context by writing ID")
 
 class AskResponse(BaseModel):
     result: Dict[str, Any]

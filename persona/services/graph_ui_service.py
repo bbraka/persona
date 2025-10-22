@@ -15,25 +15,23 @@ class GraphUIService:
     async def get_graph_ui_data(
         user_id: str,
         graph_ops: GraphOps,
-        search: Optional[str] = None,
-        topics: Optional[List[str]] = None,
-        min_confidence: Optional[float] = None,
-        sources: Optional[List[str]] = None
+        book_id: Optional[int] = None,
+        highlight_id: Optional[int] = None,
+        writing_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """
-        Fetch comprehensive graph data for UI visualization with optional filtering.
+        Fetch comprehensive graph data for UI visualization with optional filtering by entity IDs.
 
         Args:
             user_id: The user ID to fetch data for
             graph_ops: Graph operations instance
-            search: Optional search term to filter nodes by name (case-insensitive)
-            topics: Optional list of topics/disciplines to filter by
-            min_confidence: Optional minimum confidence score for insights (default: 0.7)
-            sources: Optional list of sources/perspectives to filter by
+            book_id: Optional book ID to filter nodes
+            highlight_id: Optional highlight ID to filter nodes
+            writing_id: Optional writing ID to filter nodes
 
         Returns raw Neo4j response dictionaries containing:
         - topics: Aggregated by type/discipline with entity and relationship counts
-        - insights: High-confidence nodes (confidence >= min_confidence, default 0.7)
+        - insights: High-confidence nodes (confidence >= 0.7)
         - sources: Aggregated by perspective field if available
         - nodes: Filtered graph nodes with properties
         - relationships: Relationships connecting filtered nodes
@@ -42,45 +40,29 @@ class GraphUIService:
 
         # Log incoming filter parameters
         logger.info(f"GraphUIService.get_graph_ui_data called for user={user_id}")
-        logger.info(f"  Filters: search={search}, topics={topics}, min_confidence={min_confidence}, sources={sources}")
+        logger.info(f"  Filters: book_id={book_id}, highlight_id={highlight_id}, writing_id={writing_id}")
 
-        # Set default min_confidence if not provided
-        if min_confidence is None:
-            min_confidence = 0.7
-            logger.debug(f"Using default min_confidence: {min_confidence}")
+        # Set default min_confidence
+        min_confidence = 0.7
 
         # Query 1: Get topics (aggregated by discipline)
-        # Discipline is the primary categorization field per the prompts
-        # All filters are parameterized for security
-        # For sources filter: find nodes connected to Book nodes with matching names
+        # Filter by entity IDs if provided
         topics_query = """
         MATCH (n:NodeName)
         WHERE n.UserId = $user_id
           AND n.discipline IS NOT NULL
-          AND (NOT $has_topics OR n.discipline IN $topics)
-          AND (NOT $has_search OR toLower(n.name) CONTAINS toLower($search))
-        WITH n
-        WHERE NOT $has_sources
-           OR EXISTS {
-               MATCH (n)-[]->(book:NodeName)
-               WHERE book.UserId = $user_id
-                 AND book.type = 'Book'
-                 AND book.name IN $sources
-           }
-           OR EXISTS {
-               MATCH (book:NodeName)-[]->(n)
-               WHERE book.UserId = $user_id
-                 AND book.type = 'Book'
-                 AND book.name IN $sources
-           }
+          AND (NOT $has_book_id OR $book_id IN n.book_id)
+          AND (NOT $has_highlight_id OR $highlight_id IN n.highlight_id)
+          AND (NOT $has_writing_id OR $writing_id IN n.writing_id)
         WITH n.discipline AS topic,
              count(n) AS entity_count,
              collect(n.bloom_level) AS bloom_levels
         OPTIONAL MATCH (n1:NodeName)-[r]-(n2:NodeName)
         WHERE n1.UserId = $user_id
           AND n1.discipline = topic
-          AND (NOT $has_topics OR n1.discipline IN $topics)
-          AND (NOT $has_search OR toLower(n1.name) CONTAINS toLower($search))
+          AND (NOT $has_book_id OR $book_id IN n1.book_id)
+          AND (NOT $has_highlight_id OR $highlight_id IN n1.highlight_id)
+          AND (NOT $has_writing_id OR $writing_id IN n1.writing_id)
         WITH topic, entity_count, bloom_levels, count(DISTINCT r) AS relationship_count
         RETURN topic AS name,
                entity_count,
@@ -95,22 +77,9 @@ class GraphUIService:
         WHERE n.UserId = $user_id
           AND n.confidence IS NOT NULL
           AND n.confidence >= $min_confidence
-          AND (NOT $has_topics OR n.discipline IN $topics)
-          AND (NOT $has_search OR toLower(n.name) CONTAINS toLower($search))
-        WITH n
-        WHERE NOT $has_sources
-           OR EXISTS {
-               MATCH (n)-[]->(book:NodeName)
-               WHERE book.UserId = $user_id
-                 AND book.type = 'Book'
-                 AND book.name IN $sources
-           }
-           OR EXISTS {
-               MATCH (book:NodeName)-[]->(n)
-               WHERE book.UserId = $user_id
-                 AND book.type = 'Book'
-                 AND book.name IN $sources
-           }
+          AND (NOT $has_book_id OR $book_id IN n.book_id)
+          AND (NOT $has_highlight_id OR $highlight_id IN n.highlight_id)
+          AND (NOT $has_writing_id OR $writing_id IN n.writing_id)
         RETURN n.name AS description,
                n.confidence AS confidence,
                coalesce(n.discipline, n.type, 'Unknown') AS source
@@ -118,48 +87,35 @@ class GraphUIService:
         LIMIT 50
         """
 
-        # Query 3: Get sources (Book nodes that have content connected to them)
-        # Returns book names and count of nodes connected to each book
+        # Query 3: Get sources - aggregated count by entity type
+        # Returns counts of nodes by book_id, highlight_id, writing_id
         sources_query = """
-        MATCH (book:NodeName)
-        WHERE book.UserId = $user_id
-          AND book.type = 'Book'
-        OPTIONAL MATCH (content:NodeName)-[]->(book)
-        WHERE content.UserId = $user_id
-          AND NOT content.type IN ['Reading Session', 'ReadingSession', 'CommunityHeader', 'CommunitySubheader']
-          AND (NOT $has_topics OR content.discipline IN $topics)
-          AND (NOT $has_search OR toLower(content.name) CONTAINS toLower($search))
-        WITH book.name AS source_name, count(DISTINCT content) AS count
-        WHERE count > 0
-          AND (NOT $has_sources OR source_name IN $sources)
-        RETURN source_name AS name,
-               count
-        ORDER BY count DESC
+        MATCH (n:NodeName)
+        WHERE n.UserId = $user_id
+          AND NOT n.type IN ['Reading Session', 'ReadingSession', 'CommunityHeader', 'CommunitySubheader']
+          AND (NOT $has_book_id OR $book_id IN n.book_id)
+          AND (NOT $has_highlight_id OR $highlight_id IN n.highlight_id)
+          AND (NOT $has_writing_id OR $writing_id IN n.writing_id)
+        WITH
+          size([id IN n.book_id WHERE id IS NOT NULL]) AS book_count,
+          size([id IN n.highlight_id WHERE id IS NOT NULL]) AS highlight_count,
+          size([id IN n.writing_id WHERE id IS NOT NULL]) AS writing_count
+        RETURN
+          sum(book_count) AS total_book_refs,
+          sum(highlight_count) AS total_highlight_refs,
+          sum(writing_count) AS total_writing_refs
         """
 
         # Query 4: Get all nodes with their properties
         # Exclude internal node types used for tracking (Reading Session, etc.)
-        # For sources filter: only return nodes connected to specified books
+        # Filter by entity IDs if provided
         nodes_query = """
         MATCH (n:NodeName)
         WHERE n.UserId = $user_id
           AND NOT n.type IN ['Reading Session', 'ReadingSession', 'CommunityHeader', 'CommunitySubheader', 'Book']
-          AND (NOT $has_topics OR n.discipline IN $topics)
-          AND (NOT $has_search OR toLower(n.name) CONTAINS toLower($search))
-        WITH n
-        WHERE NOT $has_sources
-           OR EXISTS {
-               MATCH (n)-[]->(book:NodeName)
-               WHERE book.UserId = $user_id
-                 AND book.type = 'Book'
-                 AND book.name IN $sources
-           }
-           OR EXISTS {
-               MATCH (book:NodeName)-[]->(n)
-               WHERE book.UserId = $user_id
-                 AND book.type = 'Book'
-                 AND book.name IN $sources
-           }
+          AND (NOT $has_book_id OR $book_id IN n.book_id)
+          AND (NOT $has_highlight_id OR $highlight_id IN n.highlight_id)
+          AND (NOT $has_writing_id OR $writing_id IN n.writing_id)
         RETURN elementId(n) AS id,
                n.name AS name,
                n.type AS type,
@@ -184,39 +140,9 @@ class GraphUIService:
         WHERE source.UserId = $user_id AND target.UserId = $user_id
           AND NOT source.type IN ['Reading Session', 'ReadingSession', 'CommunityHeader', 'CommunitySubheader', 'Book']
           AND NOT target.type IN ['Reading Session', 'ReadingSession', 'CommunityHeader', 'CommunitySubheader', 'Book']
-          AND (NOT $has_topics OR (source.discipline IN $topics AND target.discipline IN $topics))
-          AND (NOT $has_search OR (toLower(source.name) CONTAINS toLower($search)
-                                OR toLower(target.name) CONTAINS toLower($search)))
-        WITH source, target, r
-        WHERE NOT $has_sources
-           OR (
-               EXISTS {
-                   MATCH (source)-[]->(book:NodeName)
-                   WHERE book.UserId = $user_id
-                     AND book.type = 'Book'
-                     AND book.name IN $sources
-               }
-               OR EXISTS {
-                   MATCH (book:NodeName)-[]->(source)
-                   WHERE book.UserId = $user_id
-                     AND book.type = 'Book'
-                     AND book.name IN $sources
-               }
-           )
-           AND (
-               EXISTS {
-                   MATCH (target)-[]->(book:NodeName)
-                   WHERE book.UserId = $user_id
-                     AND book.type = 'Book'
-                     AND book.name IN $sources
-               }
-               OR EXISTS {
-                   MATCH (book:NodeName)-[]->(target)
-                   WHERE book.UserId = $user_id
-                     AND book.type = 'Book'
-                     AND book.name IN $sources
-               }
-           )
+          AND (NOT $has_book_id OR ($book_id IN source.book_id AND $book_id IN target.book_id))
+          AND (NOT $has_highlight_id OR ($highlight_id IN source.highlight_id AND $highlight_id IN target.highlight_id))
+          AND (NOT $has_writing_id OR ($writing_id IN source.writing_id AND $writing_id IN target.writing_id))
         RETURN source.name AS source,
                target.name AS target,
                r.value AS relation
@@ -227,30 +153,28 @@ class GraphUIService:
         params = {
             "user_id": user_id,
             "min_confidence": min_confidence,
-            "has_topics": topics is not None and len(topics) > 0,
-            "topics": topics if topics else [],
-            "has_sources": sources is not None and len(sources) > 0,
-            "sources": sources if sources else [],
-            "has_search": search is not None and len(search.strip()) > 0,
-            "search": search if search else ""
+            "has_book_id": book_id is not None,
+            "book_id": book_id if book_id is not None else 0,
+            "has_highlight_id": highlight_id is not None,
+            "highlight_id": highlight_id if highlight_id is not None else 0,
+            "has_writing_id": writing_id is not None,
+            "writing_id": writing_id if writing_id is not None else 0
         }
 
         logger.info(f"Query parameters prepared:")
-        logger.info(f"  has_topics={params['has_topics']}, topics={params['topics']}")
-        logger.info(f"  has_sources={params['has_sources']}, sources={params['sources']}")
-        logger.info(f"  has_search={params['has_search']}, search='{params['search']}'")
+        logger.info(f"  has_book_id={params['has_book_id']}, book_id={params['book_id']}")
+        logger.info(f"  has_highlight_id={params['has_highlight_id']}, highlight_id={params['highlight_id']}")
+        logger.info(f"  has_writing_id={params['has_writing_id']}, writing_id={params['writing_id']}")
         logger.info(f"  min_confidence={params['min_confidence']}")
 
         # Log which filters are active
         active_filters = []
-        if params['has_topics']:
-            active_filters.append(f"topics={params['topics']}")
-        if params['has_sources']:
-            active_filters.append(f"sources={params['sources']}")
-        if params['has_search']:
-            active_filters.append(f"search='{params['search']}'")
-        if params['min_confidence'] != 0.7:
-            active_filters.append(f"min_confidence={params['min_confidence']}")
+        if params['has_book_id']:
+            active_filters.append(f"book_id={params['book_id']}")
+        if params['has_highlight_id']:
+            active_filters.append(f"highlight_id={params['highlight_id']}")
+        if params['has_writing_id']:
+            active_filters.append(f"writing_id={params['writing_id']}")
 
         if active_filters:
             logger.info(f"Active filters: {', '.join(active_filters)}")

@@ -387,19 +387,39 @@ class Neo4jConnectionManager:
             else:
                 logger.debug("Vector index 'embeddings_index' already exists.")
 
-    async def query_text_similarity(self, keyword_embedding: List[float], user_id: str, limit: int = 5, index_name: str = "embeddings_index") -> List[Dict[str, Any]]:
+    async def query_text_similarity(
+        self,
+        keyword_embedding: List[float],
+        user_id: str,
+        limit: int = 5,
+        index_name: str = "embeddings_index",
+        book_id: Optional[int] = None,
+        highlight_id: Optional[int] = None,
+        writing_id: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
         """
-        Query the Neo4j vector index to find the top N nodes similar to a given text keyword embedding, filtered by user ID.
+        Query nodes by cosine similarity with optional entity ID pre-filtering.
+        When entity IDs are provided, pre-filters nodes before computing similarity.
 
         Args:
         - keyword_embedding (List[float]): The embedding of the text keyword as a list of floats.
         - user_id (str): The user ID to filter the nodes by.
         - limit (int): Maximum number of results to return (default: 5).
         - index_name (str): The name of the vector index used for querying.
+        - book_id (Optional[int]): Optional book ID to filter results.
+        - highlight_id (Optional[int]): Optional highlight ID to filter results.
+        - writing_id (Optional[int]): Optional writing ID to filter results.
 
         Returns:
         - List[Dict[str, Any]]: A list of dictionaries containing the node ID, node name, and their similarity scores.
         """
+        # If entity IDs are provided, use direct query with pre-filtering
+        if book_id is not None or highlight_id is not None or writing_id is not None:
+            return await self._query_similarity_with_entity_filter(
+                keyword_embedding, user_id, limit, book_id, highlight_id, writing_id
+            )
+
+        # Otherwise use the vector index (faster for unfiltered queries)
         query = """
         CALL db.index.vector.queryNodes($indexName, $limit, $embedding)
         YIELD node, score
@@ -407,6 +427,7 @@ class Neo4jConnectionManager:
         RETURN elementId(node) AS nodeId, node.name AS nodeName, score
         ORDER BY score DESC
         """
+
         results = []
         async with self._ensure_driver().session() as session:
             tx = await session.begin_transaction()
@@ -424,6 +445,81 @@ class Neo4jConnectionManager:
                 raise
             finally:
                 await tx.close()
+        return results
+
+    async def _query_similarity_with_entity_filter(
+        self,
+        keyword_embedding: List[float],
+        user_id: str,
+        limit: int,
+        book_id: Optional[int] = None,
+        highlight_id: Optional[int] = None,
+        writing_id: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Query nodes by computing cosine similarity directly, with entity ID pre-filtering.
+        This avoids the vector index and allows proper filtering before similarity computation.
+        """
+        # Build WHERE conditions for entity ID filtering
+        where_conditions = ["n.UserId = $user_id", "n.embedding IS NOT NULL"]
+        params = {
+            "user_id": user_id,
+            "embedding": keyword_embedding,
+            "limit": limit
+        }
+
+        if book_id is not None:
+            where_conditions.append("$book_id IN n.book_id")
+            params["book_id"] = book_id
+
+        if highlight_id is not None:
+            where_conditions.append("$highlight_id IN n.highlight_id")
+            params["highlight_id"] = highlight_id
+
+        if writing_id is not None:
+            where_conditions.append("$writing_id IN n.writing_id")
+            params["writing_id"] = writing_id
+
+        where_clause = " AND ".join(where_conditions)
+
+        # Direct cosine similarity calculation on filtered nodes
+        query = f"""
+        MATCH (n:NodeName)
+        WHERE {where_clause}
+        WITH n,
+             reduce(dot = 0.0, i IN range(0, size(n.embedding)-1) |
+                dot + n.embedding[i] * $embedding[i]
+             ) AS dotProduct,
+             sqrt(reduce(s = 0.0, x IN n.embedding | s + x * x)) AS normA,
+             sqrt(reduce(s = 0.0, x IN $embedding | s + x * x)) AS normB
+        WITH n, dotProduct / (normA * normB) AS score
+        WHERE score > 0
+        RETURN elementId(n) AS nodeId, n.name AS nodeName, score
+        ORDER BY score DESC
+        LIMIT $limit
+        """
+
+        logger.info(f"Similarity search with entity pre-filter: book_id={book_id}, highlight_id={highlight_id}, writing_id={writing_id}")
+
+        results = []
+        async with self._ensure_driver().session() as session:
+            tx = await session.begin_transaction()
+            try:
+                result = await tx.run(query, **params)
+                async for record in result:
+                    results.append({
+                        'nodeId': record['nodeId'],
+                        'nodeName': record['nodeName'],
+                        'score': record['score']
+                    })
+                await tx.commit()
+            except Exception as e:
+                await tx.rollback()
+                raise
+            finally:
+                await tx.close()
+
+        logger.info(f"Entity-filtered similarity search returned {len(results)} results")
         return results
 
 

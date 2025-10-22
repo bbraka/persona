@@ -1,4 +1,4 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from persona.core.graph_ops import GraphOps, GraphContextRetriever
 from persona.llm.llm_graph import generate_response_with_context
 from persona.models.schema import Node
@@ -21,10 +21,32 @@ class RAGInterface:
         if self.graph_ops:
             await self.graph_ops.__aexit__(exc_type, exc_val, exc_tb)
 
-    async def get_context(self, query: str, top_k: int = 5, max_hops: int = 2) -> str:
+    async def get_context(
+        self,
+        query: str,
+        top_k: int = 5,
+        max_hops: int = 2,
+        book_id: Optional[int] = None,
+        highlight_id: Optional[int] = None,
+        writing_id: Optional[int] = None
+    ) -> str:
         if not self.graph_ops:
             await self.__aenter__()
-        similar_nodes = await self.graph_ops.text_similarity_search(query=query, user_id=self.user_id, limit=top_k)
+
+        # Log entity ID filters
+        if book_id or highlight_id or writing_id:
+            logger.info(f"RAG query with entity filters: book_id={book_id}, highlight_id={highlight_id}, writing_id={writing_id}")
+
+        similar_nodes = await self.graph_ops.text_similarity_search(
+            query=query,
+            user_id=self.user_id,
+            limit=top_k,
+            book_id=book_id,
+            highlight_id=highlight_id,
+            writing_id=writing_id
+        )
+
+        logger.info(f"Similarity search returned {len(similar_nodes['results'])} nodes")
         nodes = [Node(name=node['nodeName'], type="Unknown") for node in similar_nodes['results']]
         logger.debug(f"Nodes for RAG query: {nodes}")
         context = await self.graph_context_retriever.get_relevant_graph_context(user_id=self.user_id, nodes=nodes, max_hops=max_hops)

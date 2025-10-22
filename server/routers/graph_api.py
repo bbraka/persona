@@ -284,26 +284,24 @@ async def update_custom_data(
 @router.get("/users/{user_id}/graph-ui-data", response_model=GraphUIDataResponse, status_code=status.HTTP_200_OK)
 async def get_graph_ui_data(
     user_id: str = Path(..., description="The unique identifier for the user"),
-    search: Optional[str] = Query(None, description="Search term to filter nodes by name or properties"),
-    topics: Optional[str] = Query(None, description="Comma-separated list of topics/disciplines to filter by"),
-    min_confidence: Optional[float] = Query(None, ge=0.0, le=1.0, description="Minimum confidence score for insights (0.0-1.0)"),
-    sources: Optional[str] = Query(None, description="Comma-separated list of sources/perspectives to filter by"),
+    book_id: Optional[int] = Query(None, description="Filter nodes by book ID"),
+    highlight_id: Optional[int] = Query(None, description="Filter nodes by highlight ID"),
+    writing_id: Optional[int] = Query(None, description="Filter nodes by writing ID"),
     graph_ops: GraphOps = Depends(get_graph_ops)
 ):
     """
-    Retrieve comprehensive graph data for UI visualization with optional filtering.
+    Retrieve comprehensive graph data for UI visualization with optional filtering by entity IDs.
 
     Query Parameters:
-    - search: Search term to filter nodes by name or properties (case-insensitive)
-    - topics: Comma-separated list of topics/disciplines to filter by (e.g., "Music,Art,Technology")
-    - min_confidence: Minimum confidence score for insights (default: 0.7)
-    - sources: Comma-separated list of sources/perspectives to filter by
+    - book_id: Filter nodes that belong to this book ID
+    - highlight_id: Filter nodes that belong to this highlight ID
+    - writing_id: Filter nodes that belong to this writing ID
 
     Returns:
     - topics: Aggregated by discipline with entity counts, relationship counts, and Bloom level distribution
-    - insights: High-confidence nodes (confidence >= min_confidence, default 0.7)
-    - sources: Aggregated by perspective or type
-    - nodes: Filtered graph nodes with properties (including chunk_ids array if present, excluding embeddings)
+    - insights: High-confidence nodes (confidence >= 0.7)
+    - sources: Aggregated entity ID statistics
+    - nodes: Filtered graph nodes with properties (including chunk_ids and entity IDs arrays, excluding embeddings)
     - relationships: Graph relationships connecting filtered nodes
     """
     try:
@@ -315,32 +313,13 @@ async def get_graph_ui_data(
             logger.warning(f"Graph UI data requested for non-existent user: {user_id}")
             raise HTTPException(status_code=404, detail=f"User {user_id} not found")
 
-        # Parse and sanitize comma-separated filter parameters
-        topics_list = None
-        if topics:
-            topics_list = [t.strip() for t in topics.split(",") if t.strip()]
-            if not topics_list:
-                topics_list = None
-
-        sources_list = None
-        if sources:
-            sources_list = [s.strip() for s in sources.split(",") if s.strip()]
-            if not sources_list:
-                sources_list = None
-
-        # Sanitize search input (trim whitespace)
-        search_term = search.strip() if search else None
-        if search_term and len(search_term) == 0:
-            search_term = None
-
-        logger.info(f"Fetching graph UI data for user {user_id} with filters - search: {search_term}, topics: {topics_list}, min_confidence: {min_confidence}, sources: {sources_list}")
+        logger.info(f"Fetching graph UI data for user {user_id} with filters - book_id: {book_id}, highlight_id: {highlight_id}, writing_id: {writing_id}")
         result = await GraphUIService.get_graph_ui_data(
             user_id=user_id,
             graph_ops=graph_ops,
-            search=search_term,
-            topics=topics_list,
-            min_confidence=min_confidence,
-            sources=sources_list
+            book_id=book_id,
+            highlight_id=highlight_id,
+            writing_id=writing_id
         )
         logger.info(f"Graph UI data fetched successfully for user {user_id}")
         return result
