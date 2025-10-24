@@ -17,10 +17,12 @@ class GraphUIService:
         graph_ops: GraphOps,
         book_id: Optional[int] = None,
         highlight_id: Optional[int] = None,
-        writing_id: Optional[int] = None
+        writing_id: Optional[int] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Fetch comprehensive graph data for UI visualization with optional filtering by entity IDs.
+        Fetch comprehensive graph data for UI visualization with optional filtering by entity IDs and dates.
 
         Args:
             user_id: The user ID to fetch data for
@@ -28,6 +30,8 @@ class GraphUIService:
             book_id: Optional book ID to filter nodes
             highlight_id: Optional highlight ID to filter nodes
             writing_id: Optional writing ID to filter nodes
+            date_from: Optional start date (ISO 8601 format, e.g., "2025-02-24") to filter nodes by created_at
+            date_to: Optional end date (ISO 8601 format, e.g., "2025-02-26") to filter nodes by created_at
 
         Returns raw Neo4j response dictionaries containing:
         - topics: Aggregated by type/discipline with entity and relationship counts
@@ -40,13 +44,13 @@ class GraphUIService:
 
         # Log incoming filter parameters
         logger.info(f"GraphUIService.get_graph_ui_data called for user={user_id}")
-        logger.info(f"  Filters: book_id={book_id}, highlight_id={highlight_id}, writing_id={writing_id}")
+        logger.info(f"  Filters: book_id={book_id}, highlight_id={highlight_id}, writing_id={writing_id}, date_from={date_from}, date_to={date_to}")
 
         # Set default min_confidence
         min_confidence = 0.7
 
         # Query 1: Get topics (aggregated by discipline)
-        # Filter by entity IDs if provided
+        # Filter by entity IDs and date range if provided
         topics_query = """
         MATCH (n:NodeName)
         WHERE n.UserId = $user_id
@@ -54,6 +58,8 @@ class GraphUIService:
           AND (NOT $has_book_id OR $book_id IN n.book_id)
           AND (NOT $has_highlight_id OR $highlight_id IN n.highlight_id)
           AND (NOT $has_writing_id OR $writing_id IN n.writing_id)
+          AND (NOT $has_date_from OR n.created_at >= $date_from)
+          AND (NOT $has_date_to OR n.created_at <= $date_to)
         WITH n.discipline AS topic,
              count(n) AS entity_count,
              collect(n.bloom_level) AS bloom_levels
@@ -63,6 +69,8 @@ class GraphUIService:
           AND (NOT $has_book_id OR $book_id IN n1.book_id)
           AND (NOT $has_highlight_id OR $highlight_id IN n1.highlight_id)
           AND (NOT $has_writing_id OR $writing_id IN n1.writing_id)
+          AND (NOT $has_date_from OR n1.created_at >= $date_from)
+          AND (NOT $has_date_to OR n1.created_at <= $date_to)
         WITH topic, entity_count, bloom_levels, count(DISTINCT r) AS relationship_count
         RETURN topic AS name,
                entity_count,
@@ -80,6 +88,8 @@ class GraphUIService:
           AND (NOT $has_book_id OR $book_id IN n.book_id)
           AND (NOT $has_highlight_id OR $highlight_id IN n.highlight_id)
           AND (NOT $has_writing_id OR $writing_id IN n.writing_id)
+          AND (NOT $has_date_from OR n.created_at >= $date_from)
+          AND (NOT $has_date_to OR n.created_at <= $date_to)
         RETURN n.name AS description,
                n.confidence AS confidence,
                coalesce(n.discipline, n.type, 'Unknown') AS source
@@ -96,6 +106,8 @@ class GraphUIService:
           AND (NOT $has_book_id OR $book_id IN n.book_id)
           AND (NOT $has_highlight_id OR $highlight_id IN n.highlight_id)
           AND (NOT $has_writing_id OR $writing_id IN n.writing_id)
+          AND (NOT $has_date_from OR n.created_at >= $date_from)
+          AND (NOT $has_date_to OR n.created_at <= $date_to)
         WITH
           size([id IN n.book_id WHERE id IS NOT NULL]) AS book_count,
           size([id IN n.highlight_id WHERE id IS NOT NULL]) AS highlight_count,
@@ -108,7 +120,7 @@ class GraphUIService:
 
         # Query 4: Get all nodes with their properties
         # Exclude internal node types used for tracking (Reading Session, etc.)
-        # Filter by entity IDs if provided
+        # Filter by entity IDs and dates if provided
         nodes_query = """
         MATCH (n:NodeName)
         WHERE n.UserId = $user_id
@@ -116,6 +128,8 @@ class GraphUIService:
           AND (NOT $has_book_id OR $book_id IN n.book_id)
           AND (NOT $has_highlight_id OR $highlight_id IN n.highlight_id)
           AND (NOT $has_writing_id OR $writing_id IN n.writing_id)
+          AND (NOT $has_date_from OR n.created_at >= $date_from)
+          AND (NOT $has_date_to OR n.created_at <= $date_to)
         RETURN elementId(n) AS id,
                n.name AS name,
                n.type AS type,
@@ -126,6 +140,8 @@ class GraphUIService:
                n.book_id AS book_id,
                n.highlight_id AS highlight_id,
                n.writing_id AS writing_id,
+               n.created_at AS created_at,
+               n.bloom_history AS bloom_history,
                properties(n) AS properties
         ORDER BY n.name
         """
@@ -143,6 +159,8 @@ class GraphUIService:
           AND (NOT $has_book_id OR ($book_id IN source.book_id AND $book_id IN target.book_id))
           AND (NOT $has_highlight_id OR ($highlight_id IN source.highlight_id AND $highlight_id IN target.highlight_id))
           AND (NOT $has_writing_id OR ($writing_id IN source.writing_id AND $writing_id IN target.writing_id))
+          AND (NOT $has_date_from OR (source.created_at >= $date_from AND target.created_at >= $date_from))
+          AND (NOT $has_date_to OR (source.created_at <= $date_to AND target.created_at <= $date_to))
         RETURN source.name AS source,
                target.name AS target,
                r.value AS relation
@@ -150,6 +168,15 @@ class GraphUIService:
 
         # Build parameters dictionary with boolean flags for conditional filtering
         # This prevents Cypher injection by using parameterized queries
+
+        # Handle date_to: if it's just a date (no time component), append end-of-day time
+        # This ensures that queries like date_to="2025-02-23" include all timestamps on that day
+        # (e.g., "2025-02-23T22:00:00+00:00" should match)
+        processed_date_to = date_to
+        if date_to is not None and len(date_to) == 10:  # Format: YYYY-MM-DD
+            # Append end-of-day time to include the entire day
+            processed_date_to = f"{date_to}T23:59:59.999999+00:00"
+
         params = {
             "user_id": user_id,
             "min_confidence": min_confidence,
@@ -158,13 +185,19 @@ class GraphUIService:
             "has_highlight_id": highlight_id is not None,
             "highlight_id": highlight_id if highlight_id is not None else 0,
             "has_writing_id": writing_id is not None,
-            "writing_id": writing_id if writing_id is not None else 0
+            "writing_id": writing_id if writing_id is not None else 0,
+            "has_date_from": date_from is not None,
+            "date_from": date_from if date_from is not None else "",
+            "has_date_to": date_to is not None,
+            "date_to": processed_date_to if processed_date_to is not None else ""
         }
 
         logger.info(f"Query parameters prepared:")
         logger.info(f"  has_book_id={params['has_book_id']}, book_id={params['book_id']}")
         logger.info(f"  has_highlight_id={params['has_highlight_id']}, highlight_id={params['highlight_id']}")
         logger.info(f"  has_writing_id={params['has_writing_id']}, writing_id={params['writing_id']}")
+        logger.info(f"  has_date_from={params['has_date_from']}, date_from={params['date_from']}")
+        logger.info(f"  has_date_to={params['has_date_to']}, date_to={params['date_to']}")
         logger.info(f"  min_confidence={params['min_confidence']}")
 
         # Log which filters are active
@@ -175,6 +208,10 @@ class GraphUIService:
             active_filters.append(f"highlight_id={params['highlight_id']}")
         if params['has_writing_id']:
             active_filters.append(f"writing_id={params['writing_id']}")
+        if params['has_date_from']:
+            active_filters.append(f"date_from={params['date_from']}")
+        if params['has_date_to']:
+            active_filters.append(f"date_to={params['date_to']}")
 
         if active_filters:
             logger.info(f"Active filters: {', '.join(active_filters)}")
@@ -242,8 +279,22 @@ class GraphUIService:
                 props.pop("highlight_id", None)
                 props.pop("writing_id", None)
 
+                # Remove temporal fields from props dict since they're in top-level
+                props.pop("created_at", None)
+                props.pop("bloom_history", None)
+
                 # Remove embedding vector (never send to client)
                 props.pop("embedding", None)
+
+                # Parse bloom_history from JSON string if present
+                import json
+                bloom_history_str = node.get("bloom_history")
+                bloom_history = []
+                if bloom_history_str:
+                    try:
+                        bloom_history = json.loads(bloom_history_str)
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning(f"Failed to parse bloom_history for node {node.get('name')}")
 
                 nodes.append({
                     "id": node["id"],
@@ -256,6 +307,8 @@ class GraphUIService:
                     "book_id": node.get("book_id", []),  # Array of book IDs
                     "highlight_id": node.get("highlight_id", []),  # Array of highlight IDs
                     "writing_id": node.get("writing_id", []),  # Array of writing IDs
+                    "created_at": node.get("created_at"),  # ISO 8601 timestamp
+                    "bloom_history": bloom_history,  # Array of Bloom level updates
                     "properties": props  # Only custom properties remain
                 })
 

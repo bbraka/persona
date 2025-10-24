@@ -82,6 +82,21 @@ class GraphConstructor:
             if node.confidence is not None:
                 properties["confidence"] = node.confidence
 
+            # Convert datetime to ISO string for NodeModel
+            created_at_str = None
+            if hasattr(node, 'created_at') and node.created_at:
+                created_at_str = node.created_at.isoformat() if hasattr(node.created_at, 'isoformat') else str(node.created_at)
+
+            # Convert BloomLevelUpdate objects to dicts for NodeModel
+            bloom_history_dicts = []
+            if hasattr(node, 'bloom_history') and node.bloom_history:
+                for update in node.bloom_history:
+                    bloom_history_dicts.append({
+                        "level": update.level,
+                        "timestamp": update.timestamp.isoformat() if hasattr(update.timestamp, 'isoformat') else str(update.timestamp),
+                        "source": update.source
+                    })
+
             nodes.append(NodeModel(
                 name=node.name,
                 type=node.type,
@@ -90,7 +105,9 @@ class GraphConstructor:
                 highlight_id=node.highlight_id if node.highlight_id else [],
                 writing_id=node.writing_id if node.writing_id else [],
                 properties=properties,
-                embedding=embedding
+                embedding=embedding,
+                created_at=created_at_str,
+                bloom_history=bloom_history_dicts
             ))
         
         relationships = [RelationshipModel(
@@ -165,11 +182,46 @@ class GraphConstructor:
             except (ValueError, TypeError):
                 pass
 
+        # Extract date from metadata
+        from datetime import datetime
+        annotation_date = None
+        if 'date' in metadata:
+            try:
+                # Parse ISO 8601 date string or accept datetime object
+                date_value = metadata['date']
+                if isinstance(date_value, str):
+                    annotation_date = datetime.fromisoformat(date_value.replace('Z', '+00:00'))
+                elif isinstance(date_value, datetime):
+                    annotation_date = date_value
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Failed to parse date from metadata: {e}")
+
         # Convert LLM nodes to schema nodes, applying IDs from metadata
         nodes = []
         for node in llm_nodes:
             llm_book_id = getattr(node, 'book_id', [])
             final_book_id = llm_book_id or book_ids
+
+            # Initialize temporal fields
+            current_time = datetime.utcnow()
+            bloom_level = getattr(node, 'bloom_level', '')
+
+            # Create initial Bloom history entry if bloom_level is present
+            from persona.models.schema import BloomLevelUpdate
+            bloom_history = []
+            if bloom_level:
+                source_info = []
+                if highlight_ids:
+                    source_info.append(f"highlight_id:{highlight_ids[0]}")
+                elif book_ids:
+                    source_info.append(f"book_id:{book_ids[0]}")
+                source = ', '.join(source_info) if source_info else None
+
+                bloom_history.append(BloomLevelUpdate(
+                    level=bloom_level,
+                    timestamp=annotation_date or current_time,
+                    source=source
+                ))
 
             nodes.append(Node(
                 name=node.name,
@@ -179,8 +231,10 @@ class GraphConstructor:
                 highlight_id=getattr(node, 'highlight_id', []) or highlight_ids,
                 writing_id=getattr(node, 'writing_id', []) or writing_ids,
                 discipline=getattr(node, 'discipline', ''),
-                bloom_level=getattr(node, 'bloom_level', ''),
-                confidence=getattr(node, 'confidence', 0.0)
+                bloom_level=bloom_level,
+                confidence=getattr(node, 'confidence', 0.0),
+                created_at=annotation_date or current_time,
+                bloom_history=bloom_history
             ))
 
         return nodes

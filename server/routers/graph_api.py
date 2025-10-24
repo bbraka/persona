@@ -287,21 +287,25 @@ async def get_graph_ui_data(
     book_id: Optional[int] = Query(None, description="Filter nodes by book ID"),
     highlight_id: Optional[int] = Query(None, description="Filter nodes by highlight ID"),
     writing_id: Optional[int] = Query(None, description="Filter nodes by writing ID"),
+    date_from: Optional[str] = Query(None, description="Filter nodes created on or after this date (ISO 8601 format, e.g., '2025-02-24')"),
+    date_to: Optional[str] = Query(None, description="Filter nodes created on or before this date (ISO 8601 format, e.g., '2025-02-26')"),
     graph_ops: GraphOps = Depends(get_graph_ops)
 ):
     """
-    Retrieve comprehensive graph data for UI visualization with optional filtering by entity IDs.
+    Retrieve comprehensive graph data for UI visualization with optional filtering by entity IDs and dates.
 
     Query Parameters:
     - book_id: Filter nodes that belong to this book ID
     - highlight_id: Filter nodes that belong to this highlight ID
     - writing_id: Filter nodes that belong to this writing ID
+    - date_from: Filter nodes created on or after this date (ISO 8601, e.g., "2025-02-24")
+    - date_to: Filter nodes created on or before this date (ISO 8601, e.g., "2025-02-26")
 
     Returns:
     - topics: Aggregated by discipline with entity counts, relationship counts, and Bloom level distribution
     - insights: High-confidence nodes (confidence >= 0.7)
     - sources: Aggregated entity ID statistics
-    - nodes: Filtered graph nodes with properties (including chunk_ids and entity IDs arrays, excluding embeddings)
+    - nodes: Filtered graph nodes with properties (including chunk_ids, entity IDs arrays, created_at, bloom_history, excluding embeddings)
     - relationships: Graph relationships connecting filtered nodes
     """
     try:
@@ -313,13 +317,15 @@ async def get_graph_ui_data(
             logger.warning(f"Graph UI data requested for non-existent user: {user_id}")
             raise HTTPException(status_code=404, detail=f"User {user_id} not found")
 
-        logger.info(f"Fetching graph UI data for user {user_id} with filters - book_id: {book_id}, highlight_id: {highlight_id}, writing_id: {writing_id}")
+        logger.info(f"Fetching graph UI data for user {user_id} with filters - book_id: {book_id}, highlight_id: {highlight_id}, writing_id: {writing_id}, date_from: {date_from}, date_to: {date_to}")
         result = await GraphUIService.get_graph_ui_data(
             user_id=user_id,
             graph_ops=graph_ops,
             book_id=book_id,
             highlight_id=highlight_id,
-            writing_id=writing_id
+            writing_id=writing_id,
+            date_from=date_from,
+            date_to=date_to
         )
         logger.info(f"Graph UI data fetched successfully for user {user_id}")
         return result

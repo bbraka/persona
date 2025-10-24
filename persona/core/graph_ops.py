@@ -90,16 +90,38 @@ class GraphOps:
 
         nodes_created = 0
         if nodes_to_create:
-            # Create nodes with names, properties, types, chunk_ids, and entity IDs
-            node_dicts = [{
-                "name": node.name,
-                "type": node.type or "",
-                "properties": node.properties or {},
-                "chunk_ids": getattr(node, 'chunk_ids', []),
-                "book_id": getattr(node, 'book_id', []),
-                "highlight_id": getattr(node, 'highlight_id', []),
-                "writing_id": getattr(node, 'writing_id', [])
-            } for node in nodes_to_create]
+            # Create nodes with names, properties, types, chunk_ids, entity IDs, and temporal fields
+            node_dicts = []
+            for node in nodes_to_create:
+                node_dict = {
+                    "name": node.name,
+                    "type": node.type or "",
+                    "properties": node.properties or {},
+                    "chunk_ids": getattr(node, 'chunk_ids', []),
+                    "book_id": getattr(node, 'book_id', []),
+                    "highlight_id": getattr(node, 'highlight_id', []),
+                    "writing_id": getattr(node, 'writing_id', [])
+                }
+
+                # Add temporal fields (created_at and bloom_history)
+                created_at = getattr(node, 'created_at', None)
+                if created_at:
+                    # Convert datetime to ISO 8601 string for Neo4j
+                    node_dict["created_at"] = created_at.isoformat() if hasattr(created_at, 'isoformat') else str(created_at)
+
+                bloom_history = getattr(node, 'bloom_history', [])
+                if bloom_history:
+                    # Convert BloomLevelUpdate objects to dicts for Neo4j
+                    node_dict["bloom_history"] = [
+                        {
+                            "level": update.level,
+                            "timestamp": update.timestamp.isoformat() if hasattr(update.timestamp, 'isoformat') else str(update.timestamp),
+                            "source": update.source
+                        }
+                        for update in bloom_history
+                    ]
+
+                node_dicts.append(node_dict)
 
             await self.neo4j_manager.create_nodes(node_dicts, user_id)
             nodes_created = len(nodes_to_create)
@@ -148,11 +170,41 @@ class GraphOps:
 
         node_data = await self.neo4j_manager.get_node_data(node_name, user_id)
         if node_data:
+            from datetime import datetime
+
+            # Parse created_at from ISO string to datetime
+            created_at_str = node_data.get("created_at")
+            created_at = None
+            if created_at_str:
+                try:
+                    created_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+                except (ValueError, AttributeError):
+                    logger.warning(f"Failed to parse created_at: {created_at_str}")
+
+            # Parse bloom_history from dicts
+            bloom_history_data = node_data.get("bloom_history", [])
+            bloom_history = []
+            if bloom_history_data:
+                from persona.models.schema import BloomLevelUpdate
+                for update_dict in bloom_history_data:
+                    try:
+                        timestamp_str = update_dict.get("timestamp")
+                        timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00')) if timestamp_str else datetime.utcnow()
+                        bloom_history.append(BloomLevelUpdate(
+                            level=update_dict.get("level", ""),
+                            timestamp=timestamp,
+                            source=update_dict.get("source")
+                        ))
+                    except (ValueError, AttributeError, KeyError) as e:
+                        logger.warning(f"Failed to parse bloom history entry: {e}")
+
             return NodeModel(
                 name=node_data["name"],
                 type=node_data.get("type"),
                 properties=node_data.get("properties", {}),
-                embedding=node_data.get("embedding")
+                embedding=node_data.get("embedding"),
+                created_at=created_at_str,  # Keep as string in NodeModel
+                bloom_history=bloom_history_data  # Keep as dict list in NodeModel
             )
         return NodeModel(name=node_name, type=None, embedding=None)
 
@@ -362,7 +414,7 @@ class GraphOps:
         # STEP 2: Prepare data for nodes that will actually be created
         nodes_data = []
         for node in nodes_to_create:
-            nodes_data.append({
+            node_dict = {
                 "name": node.name,
                 "type": node.type or "",
                 "properties": node.properties or {},
@@ -370,7 +422,15 @@ class GraphOps:
                 "book_id": node.book_id if node.book_id else [],
                 "highlight_id": node.highlight_id if node.highlight_id else [],
                 "writing_id": node.writing_id if node.writing_id else []
-            })
+            }
+
+            # Add temporal fields if present
+            if hasattr(node, 'created_at') and node.created_at:
+                node_dict["created_at"] = node.created_at
+            if hasattr(node, 'bloom_history') and node.bloom_history:
+                node_dict["bloom_history"] = node.bloom_history
+
+            nodes_data.append(node_dict)
 
             # Add embedding data for new nodes
             if node.embedding:
@@ -428,7 +488,7 @@ class GraphOps:
         for node_name in affected_nodes:
             try:
                 bloom_level = await self.calculate_bloom_level(node_name, user_id)
-                
+
                 # For new nodes, use properties from graph_update (LLM-extracted)
                 # For existing nodes, fetch from DB to preserve their existing properties
                 if node_name in new_nodes_map:
@@ -439,14 +499,23 @@ class GraphOps:
                     # Existing node: fetch current properties from DB
                     node_data = await self.get_node_data(node_name, user_id)
                     current_props = node_data.properties.copy() if node_data.properties else {}
-                
+
                 # Update with calculated bloom level (overwrites LLM bloom_level with topology-based)
                 current_props['bloom_level'] = bloom_level
-                
-                bloom_updates.append({
+
+                # Include entity IDs for source attribution in bloom_history
+                bloom_update = {
                     "node_name": node_name,
                     "properties": current_props
-                })
+                }
+
+                # Add entity IDs if this node had entities appended
+                if node_name in entity_ids_to_append:
+                    bloom_update['book_id'] = entity_ids_to_append[node_name].get('book_ids', [])
+                    bloom_update['highlight_id'] = entity_ids_to_append[node_name].get('highlight_ids', [])
+                    bloom_update['writing_id'] = entity_ids_to_append[node_name].get('writing_ids', [])
+
+                bloom_updates.append(bloom_update)
             except Exception as e:
                 logger.warning(f"Could not calculate bloom level for {node_name}: {e}")
         
@@ -474,7 +543,9 @@ class GraphOps:
             name=node['name'],
             type=node.get('type'),
             properties=node.get('properties', {}),
-            embedding=node.get('embedding')
+            embedding=node.get('embedding'),
+            created_at=node.get('created_at'),
+            bloom_history=node.get('bloom_history', [])
         ) for node in nodes]
 
     async def get_all_relationships(self, user_id: str) -> List[RelationshipModel]:
@@ -653,43 +724,77 @@ class GraphOps:
         await self.make_communities(user_id, community_structure, subgraphs)
         
     async def calculate_bloom_level(self, node_name: str, user_id: str) -> str:
-            """Calculate Bloom's taxonomy level based on graph evidence using a single optimized query"""
+            """
+            Calculate Bloom's taxonomy level based on graph evidence and user interaction.
+
+            IMPORTANT: Bloom levels should reflect DEMONSTRATED cognitive work, not just exposure.
+            Most concepts start at "Remember" and only advance with evidence of:
+            - Understand: User explains/paraphrases the concept
+            - Apply: User uses concept to solve problems or in practical contexts
+            - Analyze: User breaks down concept, identifies patterns/components
+            - Evaluate: User critiques, judges, or defends positions
+            - Create: User synthesizes to produce new insights
+
+            Graph topology (connections) provides WEAK evidence and should be used conservatively.
+            """
             await self.initialize()
-            
+
             if not self.neo4j_manager.driver:
                 logger.error("Neo4j driver is not initialized.")
                 return "Remember"
-            
-            # Combined query: get degree and contexts in one call
+
+            # Query to get graph evidence: degree, contexts, entity IDs (as proxy for exposure)
             query = """
             MATCH (n:NodeName {name: $node_name, UserId: $user_id})
             OPTIONAL MATCH (n)-[r]-()
             WITH n, count(r) as degree
             OPTIONAL MATCH (n)-[*1..2]-(connected)
             WHERE connected.type IS NOT NULL
-            RETURN degree, collect(DISTINCT connected.type) as contexts
+            WITH n, degree, collect(DISTINCT connected.type) as contexts
+            RETURN
+                degree,
+                contexts,
+                size(n.chunk_ids) as chunk_count,
+                size(n.book_id) as book_count,
+                size(n.highlight_id) as highlight_count,
+                size(n.writing_id) as writing_count
             """
-            
+
             async with self.neo4j_manager.driver.session() as session:
                 result = await session.run(query, node_name=node_name, user_id=user_id)
                 data = await result.data()
-                
+
                 if not data:
                     return "Remember"
-                
+
                 record = data[0]
                 degree = record.get('degree', 0) or 0
                 contexts = [c for c in record.get('contexts', []) if c]
-                
-                # Evidence-based bloom level
-                if degree >= 6 and len(contexts) >= 3:
-                    return "Analyze"
-                elif degree >= 3 and len(contexts) >= 2:
+                chunk_count = record.get('chunk_count', 0) or 0
+                writing_count = record.get('writing_count', 0) or 0
+
+                # Conservative bloom level calculation
+                # Most nodes should remain at Remember unless there's strong evidence
+
+                # Writing projects (user's own thoughts) suggest deeper engagement
+                if writing_count > 0:
+                    # User wrote about this concept - suggests at least Understanding
+                    if degree >= 4 and len(contexts) >= 3:
+                        return "Apply"  # Used in multiple contexts in their writing
+                    elif degree >= 2:
+                        return "Understand"  # Explained in their own words
+
+                # For passive reading (no writing), be very conservative
+                # High connectivity might suggest Apply, but only with very strong evidence
+                if degree >= 8 and len(contexts) >= 4 and chunk_count >= 5:
+                    # Concept appears many times across multiple contexts - suggests practical application
                     return "Apply"
-                elif degree >= 2:
+                elif degree >= 4 and len(contexts) >= 2 and chunk_count >= 3:
+                    # Concept connected in multiple contexts - suggests understanding
                     return "Understand"
-                else:
-                    return "Remember"
+
+                # Default: Remember (passive exposure, basic recognition)
+                return "Remember"
     
     async def update_node_properties(self, node_name: str, user_id: str, properties: Dict[str, Any]) -> None:
         """Update properties of an existing node"""

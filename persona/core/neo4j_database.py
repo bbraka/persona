@@ -100,7 +100,7 @@ class Neo4jConnectionManager:
                 node_type = (node.get("type") or "Unknown").replace(" ", "")
                 properties = node.get("properties", {})
 
-                # Base query with standard fields
+                # Base query with standard fields including temporal fields
                 query = (
                     f"MERGE (n:NodeName:`{node_type}` {{name: $name, UserId: $user_id}}) "
                     "SET n.type = $type, "
@@ -117,6 +117,20 @@ class Neo4jConnectionManager:
                     "bloom_level": properties.get("bloom_level", ""),
                     "confidence": properties.get("confidence", 0.0)
                 }
+
+                # Handle temporal fields (created_at and bloom_history)
+                # Only set created_at if it doesn't exist (preserve original timestamp)
+                created_at = node.get("created_at")
+                if created_at:
+                    query += ", n.created_at = COALESCE(n.created_at, $created_at)"
+                    params["created_at"] = created_at
+
+                # Set bloom_history if provided
+                # Neo4j doesn't support arrays of maps, so store as JSON string
+                bloom_history = node.get("bloom_history")
+                if bloom_history:
+                    query += ", n.bloom_history = $bloom_history"
+                    params["bloom_history"] = json.dumps(bloom_history) if bloom_history else None
 
                 # Handle chunk_ids array
                 chunk_ids = node.get("chunk_ids", [])
@@ -231,6 +245,20 @@ class Neo4jConnectionManager:
                         "confidence": properties.get("confidence", 0.0)
                     }
 
+                    # Handle temporal fields (created_at and bloom_history)
+                    # Only set created_at if it doesn't exist (preserve original timestamp)
+                    created_at = node.get("created_at")
+                    if created_at:
+                        query += ", n.created_at = COALESCE(n.created_at, $created_at)"
+                        params["created_at"] = created_at
+
+                    # Set bloom_history if provided
+                    # Neo4j doesn't support arrays of maps, so store as JSON string
+                    bloom_history = node.get("bloom_history")
+                    if bloom_history:
+                        query += ", n.bloom_history = $bloom_history"
+                        params["bloom_history"] = json.dumps(bloom_history) if bloom_history else None
+
                     # Handle chunk_ids array
                     chunk_ids = node.get("chunk_ids", [])
                     if chunk_ids:
@@ -279,21 +307,94 @@ class Neo4jConnectionManager:
                     logger.debug(f"Transaction: Added embedding for {emb_data['node_name']} ({len(records)} nodes updated)")
                 
                 # Step 4: Update bloom levels and other properties
+                # If bloom_level changed, append to bloom_history before updating
+                from datetime import datetime, timezone
+
                 for bloom_data in bloom_updates:
+                    props = bloom_data.get("properties", {})
+                    new_bloom_level = props.get("bloom_level", "")
+
+                    # Initialize variables to track bloom level changes
+                    check_record = None
+                    current_history = []
+                    bloom_level_changed = False
+
+                    # First, check if bloom_level is changing
+                    if new_bloom_level:
+                        check_query = """
+                        MATCH (n:NodeName {name: $node_name, UserId: $user_id})
+                        RETURN n.bloom_level AS current_level, n.bloom_history AS bloom_history
+                        """
+                        check_result = await tx.run(check_query, {
+                            "node_name": bloom_data["node_name"],
+                            "user_id": user_id
+                        })
+                        check_record = await check_result.single()
+
+                        if check_record:
+                            current_level = check_record.get("current_level")
+                            current_history_json = check_record.get("bloom_history")
+
+                            # If bloom level is changing, append to history
+                            if current_level and new_bloom_level != current_level:
+                                # Parse existing bloom_history
+                                current_history = []
+                                if current_history_json:
+                                    try:
+                                        current_history = json.loads(current_history_json)
+                                    except (json.JSONDecodeError, TypeError):
+                                        logger.warning(f"Failed to parse existing bloom_history for {bloom_data['node_name']}")
+
+                                # Determine source from entity IDs
+                                source_info = []
+                                book_ids = bloom_data.get('book_id', [])
+                                highlight_ids = bloom_data.get('highlight_id', [])
+                                writing_ids = bloom_data.get('writing_id', [])
+
+                                if highlight_ids:
+                                    source_info.append(f"highlight_id:{highlight_ids[0]}")
+                                elif book_ids:
+                                    source_info.append(f"book_id:{book_ids[0]}")
+                                elif writing_ids:
+                                    source_info.append(f"writing_id:{writing_ids[0]}")
+
+                                source = ', '.join(source_info) if source_info else None
+
+                                # Create new bloom level update entry
+                                new_entry = {
+                                    "level": new_bloom_level,
+                                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                                    "source": source
+                                }
+
+                                current_history.append(new_entry)
+                                bloom_level_changed = True
+
+                                # Log the change
+                                logger.info(
+                                    f"Bloom level change detected for '{bloom_data['node_name']}': "
+                                    f"{current_level} → {new_bloom_level}"
+                                )
+
+                    # Now update the node properties (including bloom_level and potentially bloom_history)
                     query = """
                     MATCH (n:NodeName {name: $node_name, UserId: $user_id})
                     SET n.discipline = $discipline,
                         n.bloom_level = $bloom_level,
                         n.confidence = $confidence
                     """
-                    props = bloom_data.get("properties", {})
                     params = {
                         "node_name": bloom_data["node_name"],
                         "user_id": user_id,
                         "discipline": props.get("discipline", ""),
-                        "bloom_level": props.get("bloom_level", ""),
+                        "bloom_level": new_bloom_level,
                         "confidence": props.get("confidence", 0.0)
                     }
+
+                    # If we detected a bloom level change, update bloom_history
+                    if bloom_level_changed:
+                        query = query.rstrip() + ", n.bloom_history = $bloom_history\n                    "
+                        params["bloom_history"] = json.dumps(current_history)
 
                     # Preserve chunk_ids if present
                     chunk_ids = props.get("chunk_ids")
@@ -658,18 +759,120 @@ class Neo4jConnectionManager:
                     f"{data['total_writing_ids']} writing_ids"
                 )
 
+    async def append_bloom_level_update(
+        self,
+        node_name: str,
+        bloom_update: Dict[str, Any],
+        user_id: str
+    ) -> None:
+        """
+        Append a new Bloom level update to the node's bloom_history.
+        This is used when detecting Bloom level progressions.
+
+        Args:
+            node_name: Name of the node to update
+            bloom_update: Dict with 'level', 'timestamp', 'source' keys
+            user_id: User ID
+        """
+        if not await self.user_exists(user_id):
+            logger.warning(f"User {user_id} does not exist. Cannot append bloom level update.")
+            return
+
+        async with self._ensure_driver().session() as session:
+            # Append to bloom_history array
+            query = """
+            MATCH (n:NodeName {name: $node_name, UserId: $user_id})
+            WITH n, COALESCE(n.bloom_history, []) as existing_history
+            SET n.bloom_history = existing_history + [$bloom_update]
+            RETURN size(n.bloom_history) as total_updates
+            """
+
+            result = await session.run(
+                query,
+                node_name=node_name,
+                user_id=user_id,
+                bloom_update=bloom_update
+            )
+
+            data = await result.single()
+            if data:
+                logger.debug(
+                    f"Appended Bloom level update to node '{node_name}': "
+                    f"total history entries: {data['total_updates']}"
+                )
+
+    async def preserve_earliest_created_at(
+        self,
+        node_name: str,
+        new_created_at: str,
+        user_id: str
+    ) -> None:
+        """
+        Ensure the node keeps the earliest created_at timestamp.
+        This is used when merging nodes - we want to preserve the original learning date.
+
+        Args:
+            node_name: Name of the node to update
+            new_created_at: ISO 8601 timestamp to compare
+            user_id: User ID
+        """
+        if not await self.user_exists(user_id):
+            logger.warning(f"User {user_id} does not exist. Cannot update created_at.")
+            return
+
+        if not new_created_at:
+            return
+
+        async with self._ensure_driver().session() as session:
+            # Only update if new timestamp is earlier or if created_at doesn't exist
+            query = """
+            MATCH (n:NodeName {name: $node_name, UserId: $user_id})
+            WITH n,
+                 CASE
+                     WHEN n.created_at IS NULL THEN $new_created_at
+                     WHEN $new_created_at < n.created_at THEN $new_created_at
+                     ELSE n.created_at
+                 END as earliest_timestamp
+            SET n.created_at = earliest_timestamp
+            RETURN n.created_at as final_created_at
+            """
+
+            result = await session.run(
+                query,
+                node_name=node_name,
+                user_id=user_id,
+                new_created_at=new_created_at
+            )
+
+            data = await result.single()
+            if data:
+                logger.debug(
+                    f"Updated created_at for node '{node_name}': {data['final_created_at']}"
+                )
+
     async def get_node_data(self, node_name: str, user_id: str) -> Optional[Dict[str, Any]]:
         query = """
         MATCH (n:NodeName {name: $node_name, UserId: $user_id})
-        RETURN n.name AS name, n.type AS type, 
-               n.discipline AS discipline, 
-               n.bloom_level AS bloom_level, 
-               n.confidence AS confidence
+        RETURN n.name AS name, n.type AS type,
+               n.discipline AS discipline,
+               n.bloom_level AS bloom_level,
+               n.confidence AS confidence,
+               n.created_at AS created_at,
+               n.bloom_history AS bloom_history
         """
         async with self._ensure_driver().session() as session:
             result = await session.run(query, node_name=node_name, user_id=user_id)
             record = await result.single()
             if record:
+                # Parse bloom_history from JSON string to list of dicts
+                bloom_history_str = record.get("bloom_history")
+                bloom_history = []
+                if bloom_history_str:
+                    try:
+                        bloom_history = json.loads(bloom_history_str)
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning(f"Failed to parse bloom_history for node {node_name}")
+
                 return {
                     "name": record["name"],
                     "type": record["type"],
@@ -677,7 +880,9 @@ class Neo4jConnectionManager:
                         "discipline": record.get("discipline", ""),
                         "bloom_level": record.get("bloom_level", ""),
                         "confidence": record.get("confidence", 0.0)
-                    }
+                    },
+                    "created_at": record.get("created_at"),
+                    "bloom_history": bloom_history
                 }
             return None
 
@@ -702,10 +907,12 @@ class Neo4jConnectionManager:
     async def get_all_nodes(self, user_id: str) -> List[Dict[str, Any]]:
         query = """
         MATCH (n:NodeName {UserId: $user_id})
-        RETURN n.name AS name, n.type AS type, 
-               n.discipline AS discipline, 
-               n.bloom_level AS bloom_level, 
-               n.confidence AS confidence
+        RETURN n.name AS name, n.type AS type,
+               n.discipline AS discipline,
+               n.bloom_level AS bloom_level,
+               n.confidence AS confidence,
+               n.created_at AS created_at,
+               n.bloom_history AS bloom_history
         """
         async with self._ensure_driver().session() as session:
             result = await session.run(query, user_id=user_id)
@@ -717,6 +924,19 @@ class Neo4jConnectionManager:
                     "bloom_level": record.get('bloom_level', ""),
                     "confidence": record.get('confidence', 0.0)
                 }
+                # Keep temporal fields at top level
+                record['created_at'] = record.get('created_at')
+
+                # Parse bloom_history from JSON string to list of dicts
+                bloom_history_str = record.get('bloom_history')
+                bloom_history = []
+                if bloom_history_str:
+                    try:
+                        bloom_history = json.loads(bloom_history_str)
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning(f"Failed to parse bloom_history for node {record.get('name')}")
+                record['bloom_history'] = bloom_history
+
                 # Remove individual fields from top level
                 record.pop('discipline', None)
                 record.pop('bloom_level', None)

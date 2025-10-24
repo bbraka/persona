@@ -182,13 +182,57 @@ INCLUDE exactly these fields per node:
   * Academic domains: "Psychology", "Computer Science", "History", "Biology", "Philosophy", "Economics", "Physics", "Literature"
   * Life domains: "Career", "Health", "Relationships", "Hobbies", "Finance", "Education", "Personal Development"
   * If unclear or general, use "General" or the most appropriate broad category
-- bloom_level: REQUIRED cognitive level based on Bloom's taxonomy:
-  * "Remember" - recalling facts, basic information
-  * "Understand" - comprehending meanings, explaining concepts
-  * "Apply" - using knowledge in practical situations
-  * "Analyze" - breaking down information, finding patterns
-  * "Evaluate" - making judgments, critical thinking
-  * "Create" - synthesizing ideas, producing new work
+- bloom_level: REQUIRED cognitive level based on Bloom's taxonomy - SET CONSERVATIVELY using your knowledge to VALIDATE accuracy:
+
+  ASSESSMENT RULES (Use your knowledge to verify correctness):
+
+  * "Remember" - DEFAULT. Use when:
+    - User is passively reading/highlighting
+    - User mentions concept but shows no understanding
+    - User's explanation is INCORRECT or CONFUSED (even if they wrote something)
+    - No evidence of cognitive work beyond recognition
+
+  * "Understand" - Use ONLY if:
+    - User paraphrases or explains in their own words, AND
+    - The explanation is FACTUALLY CORRECT (validate against your knowledge)
+    - User compares/contrasts accurately with other concepts
+    - Shows comprehension, not just repetition
+    - If explanation has significant ERRORS → downgrade to "Remember"
+
+  * "Apply" - Use ONLY if:
+    - User describes using knowledge to solve a problem, AND
+    - The application is CORRECT and appropriate
+    - User demonstrates proper use in a new context
+    - If misapplied or incorrect usage → max "Understand" or "Remember"
+
+  * "Analyze" - Use ONLY if:
+    - User breaks down concept into components, AND
+    - The analysis is LOGICALLY SOUND and accurate
+    - User identifies patterns or distinguishes parts correctly
+    - If analysis is flawed or confused → downgrade accordingly
+
+  * "Evaluate" - Use ONLY if:
+    - User makes informed judgments with VALID criteria
+    - Critique is reasoned and demonstrates deep understanding
+    - Not just opinions - must show evaluative thinking
+    - If judgment is unfounded or illogical → downgrade
+
+  * "Create" - Use ONLY if:
+    - User synthesizes to produce genuinely NEW insights
+    - Creation is coherent and demonstrates mastery
+    - Not just recombination - must show innovation
+
+  CRITICAL VALIDATION STEP:
+  Before assigning Understand or higher, ask yourself:
+  1. "Is what the user wrote/said CORRECT according to my knowledge?"
+  2. "Does this demonstrate actual cognitive work, or just exposure?"
+  3. "If this were on an exam, would it receive credit?"
+
+  If the answer to #1 is NO → assign "Remember" (encountered but misunderstood)
+  If the answer to #2 is "just exposure" → assign "Remember"
+  If the answer to #3 is NO → assign maximum "Remember" or "Understand" (partial credit)
+
+  IMPORTANT: Most nodes from passive reading should be "Remember". Higher levels require DEMONSTRATED and CORRECT cognitive work.
 - confidence: REQUIRED extraction quality score (0.0 to 1.0):
   * 1.0 = Explicit, direct statement with complete clarity
   * 0.8-0.9 = Clear implication with strong supporting context
