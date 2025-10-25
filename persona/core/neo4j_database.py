@@ -23,6 +23,7 @@ class Neo4jConnectionManager:
         await self.connect()
         await self.wait_for_neo4j()
         await self.ensure_vector_index()
+        await self.ensure_pagination_index()
 
     async def connect(self):
         """Create the driver connection"""
@@ -461,13 +462,13 @@ class Neo4jConnectionManager:
 
     async def ensure_vector_index(self) -> None:
         async with self._ensure_driver().session() as session:
-            # Check if the index exists
+            # Check if the vector index exists
             result = await session.run("SHOW VECTOR INDEXES")
             indexes = await result.data()
             index_exists = any(index['name'] == 'embeddings_index' for index in indexes)
 
             if not index_exists:
-                # Create the index if it doesn't exist
+                # Create the vector index if it doesn't exist
                 query = """
                 CREATE VECTOR INDEX embeddings_index
                 FOR (n:NodeName)
@@ -487,6 +488,32 @@ class Neo4jConnectionManager:
                         raise e
             else:
                 logger.debug("Vector index 'embeddings_index' already exists.")
+
+    async def ensure_pagination_index(self) -> None:
+        """Create composite index on (UserId, name) for efficient cursor-based pagination"""
+        async with self._ensure_driver().session() as session:
+            # Check if the index exists
+            result = await session.run("SHOW INDEXES")
+            indexes = await result.data()
+            index_exists = any(index['name'] == 'user_name_pagination_index' for index in indexes)
+
+            if not index_exists:
+                # Create composite index for efficient cursor-based pagination
+                query = """
+                CREATE INDEX user_name_pagination_index
+                FOR (n:NodeName)
+                ON (n.UserId, n.name)
+                """
+                try:
+                    await session.run(query)
+                    logger.info("Composite index 'user_name_pagination_index' created for efficient pagination.")
+                except Exception as e:
+                    if "EquivalentSchemaRuleAlreadyExists" in str(e):
+                        logger.debug("Composite index 'user_name_pagination_index' already exists (caught exception).")
+                    else:
+                        raise e
+            else:
+                logger.debug("Composite index 'user_name_pagination_index' already exists.")
 
     async def query_text_similarity(
         self,

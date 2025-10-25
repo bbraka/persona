@@ -266,10 +266,12 @@ async def get_graph_ui_data(
     writing_id: Optional[int] = Query(None, description="Filter nodes by writing ID"),
     date_from: Optional[str] = Query(None, description="Filter nodes created on or after this date (ISO 8601 format, e.g., '2025-02-24')"),
     date_to: Optional[str] = Query(None, description="Filter nodes created on or before this date (ISO 8601 format, e.g., '2025-02-26')"),
+    limit: Optional[int] = Query(None, description="Maximum number of nodes to return (for pagination). Uses efficient cursor-based pagination with composite index."),
+    cursor: Optional[str] = Query(None, description="Cursor for pagination (node name to start after). Get this from pagination.next_cursor in previous response."),
     graph_ops: GraphOps = Depends(get_graph_ops)
 ):
     """
-    Retrieve comprehensive graph data for UI visualization with optional filtering by entity IDs and dates.
+    Retrieve comprehensive graph data for UI visualization with optional filtering, pagination, and cursor support.
 
     Query Parameters:
     - book_id: Filter nodes that belong to this book ID
@@ -277,19 +279,28 @@ async def get_graph_ui_data(
     - writing_id: Filter nodes that belong to this writing ID
     - date_from: Filter nodes created on or after this date (ISO 8601, e.g., "2025-02-24")
     - date_to: Filter nodes created on or before this date (ISO 8601, e.g., "2025-02-26")
+    - limit: Maximum number of nodes to return (None = all nodes). Example: ?limit=100
+    - cursor: Cursor for next page (from pagination.next_cursor). Example: ?limit=100&cursor=Milton+Friedman
+
+    Pagination:
+    - Uses efficient cursor-based pagination with composite index on (UserId, name)
+    - First request: ?limit=100 (returns first 100 nodes ordered by name)
+    - Next requests: ?limit=100&cursor={next_cursor from previous response}
+    - Response includes pagination metadata: {total_nodes, returned_nodes, has_more, next_cursor, limit}
 
     Returns:
     - topics: Aggregated by discipline with entity counts, relationship counts, and Bloom level distribution
     - insights: High-confidence nodes (confidence >= 0.7)
     - sources: Aggregated entity ID statistics
-    - nodes: Filtered graph nodes with properties (including chunk_ids, entity IDs arrays, created_at, bloom_history, excluding embeddings)
-    - relationships: Graph relationships connecting filtered nodes
+    - nodes: Filtered graph nodes with properties (paginated if limit specified)
+    - relationships: Graph relationships connecting returned nodes only
+    - pagination: Pagination metadata (only present if limit specified)
     """
     try:
         if not is_valid_user_id(user_id):
             raise ValueError("Invalid user ID format.")
 
-        logger.info(f"Fetching graph UI data for user {user_id} with filters - book_id: {book_id}, highlight_id: {highlight_id}, writing_id: {writing_id}, date_from: {date_from}, date_to: {date_to}")
+        logger.info(f"Fetching graph UI data for user {user_id} with filters - book_id: {book_id}, highlight_id: {highlight_id}, writing_id: {writing_id}, date_from: {date_from}, date_to: {date_to}, limit: {limit}, cursor: {cursor}")
         result = await GraphUIService.get_graph_ui_data(
             user_id=user_id,
             graph_ops=graph_ops,
@@ -297,7 +308,9 @@ async def get_graph_ui_data(
             highlight_id=highlight_id,
             writing_id=writing_id,
             date_from=date_from,
-            date_to=date_to
+            date_to=date_to,
+            limit=limit,
+            cursor=cursor
         )
         logger.info(f"Graph UI data fetched successfully for user {user_id}")
         return result

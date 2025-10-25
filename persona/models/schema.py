@@ -303,3 +303,7 @@ class GraphUIDataResponse(BaseModel):
     sources: List[Dict[str, Any]]
     nodes: List[Dict[str, Any]]
     relationships: List[Dict[str, Any]]
+    pagination: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Pagination metadata: {total_nodes, total_relationships, has_more, next_cursor, returned_nodes}"
+    )

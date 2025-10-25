@@ -1,5 +1,5 @@
 """
-Service for fetching graph UI visualization data.
+Service for fetching graph UI visualization data with efficient cursor-based pagination.
 """
 from typing import Dict, Any, List, Optional
 from persona.core.graph_ops import GraphOps
@@ -9,7 +9,7 @@ logger = get_logger(__name__)
 
 
 class GraphUIService:
-    """Service for retrieving graph UI data."""
+    """Service for retrieving graph UI data with efficient pagination."""
 
     @staticmethod
     async def get_graph_ui_data(
@@ -19,10 +19,12 @@ class GraphUIService:
         highlight_id: Optional[int] = None,
         writing_id: Optional[int] = None,
         date_from: Optional[str] = None,
-        date_to: Optional[str] = None
+        date_to: Optional[str] = None,
+        limit: Optional[int] = None,
+        cursor: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Fetch comprehensive graph data for UI visualization with optional filtering by entity IDs and dates.
+        Fetch comprehensive graph data for UI visualization with optional filtering and cursor-based pagination.
 
         Args:
             user_id: The user ID to fetch data for
@@ -32,25 +34,85 @@ class GraphUIService:
             writing_id: Optional writing ID to filter nodes
             date_from: Optional start date (ISO 8601 format, e.g., "2025-02-24") to filter nodes by created_at
             date_to: Optional end date (ISO 8601 format, e.g., "2025-02-26") to filter nodes by created_at
+            limit: Optional maximum number of nodes to return (None = all nodes). Uses composite index for efficiency.
+            cursor: Optional cursor for pagination (node name to start after). Requires composite index.
 
-        Returns raw Neo4j response dictionaries containing:
+        Pagination Strategy:
+        - Uses composite index on (UserId, name) for O(log n) seek performance
+        - Cursor = last node name from previous page
+        - Query: WHERE n.UserId = $user_id AND n.name > $cursor ORDER BY n.name LIMIT $limit
+        - Returns pagination metadata: {total_nodes, has_more, next_cursor, returned_nodes}
+
+        Returns:
         - topics: Aggregated by type/discipline with entity and relationship counts
         - insights: High-confidence nodes (confidence >= 0.7)
         - sources: Aggregated by perspective field if available
-        - nodes: Filtered graph nodes with properties
-        - relationships: Relationships connecting filtered nodes
+        - nodes: Filtered graph nodes with properties (paginated if limit specified)
+        - relationships: Relationships connecting returned nodes only
+        - pagination: Metadata (only if limit specified)
         """
         neo4j_manager = graph_ops.neo4j_manager
 
         # Log incoming filter parameters
         logger.info(f"GraphUIService.get_graph_ui_data called for user={user_id}")
         logger.info(f"  Filters: book_id={book_id}, highlight_id={highlight_id}, writing_id={writing_id}, date_from={date_from}, date_to={date_to}")
+        logger.info(f"  Pagination: limit={limit}, cursor={cursor}")
 
         # Set default min_confidence
         min_confidence = 0.7
 
-        # Query 1: Get topics (aggregated by discipline)
-        # Filter by entity IDs and date range if provided
+        # Handle date_to: if it's just a date (no time component), append end-of-day time
+        processed_date_to = date_to
+        if date_to is not None and len(date_to) == 10:  # Format: YYYY-MM-DD
+            processed_date_to = f"{date_to}T23:59:59.999999+00:00"
+
+        # Build base parameters
+        params = {
+            "user_id": user_id,
+            "min_confidence": min_confidence,
+            "has_book_id": book_id is not None,
+            "book_id": book_id if book_id is not None else 0,
+            "has_highlight_id": highlight_id is not None,
+            "highlight_id": highlight_id if highlight_id is not None else 0,
+            "has_writing_id": writing_id is not None,
+            "writing_id": writing_id if writing_id is not None else 0,
+            "has_date_from": date_from is not None,
+            "date_from": date_from if date_from is not None else "",
+            "has_date_to": date_to is not None,
+            "date_to": processed_date_to if processed_date_to is not None else ""
+        }
+
+        # Add pagination parameters
+        if limit is not None:
+            params["limit"] = limit
+            params["has_cursor"] = cursor is not None
+            params["cursor"] = cursor if cursor is not None else ""
+
+        logger.info(f"Active filters: {[k for k, v in params.items() if k.startswith('has_') and v]}")
+
+        # Query 1: Get total node count (for pagination metadata)
+        # Only run if pagination is enabled
+        total_nodes = None
+        if limit is not None:
+            count_query = """
+            MATCH (n:NodeName)
+            WHERE n.UserId = $user_id
+              AND NOT n.type IN ['Reading Session', 'ReadingSession', 'CommunityHeader', 'CommunitySubheader', 'Book']
+              AND (NOT $has_book_id OR $book_id IN n.book_id)
+              AND (NOT $has_highlight_id OR $highlight_id IN n.highlight_id)
+              AND (NOT $has_writing_id OR $writing_id IN n.writing_id)
+              AND (NOT $has_date_from OR n.created_at >= $date_from)
+              AND (NOT $has_date_to OR n.created_at <= $date_to)
+            RETURN count(n) AS total
+            """
+            async with neo4j_manager.driver.session() as session:
+                logger.info("Executing total count query for pagination...")
+                count_result = await session.run(count_query, params)
+                count_data = await count_result.data()
+                total_nodes = count_data[0]["total"] if count_data else 0
+                logger.info(f"Total nodes matching filters: {total_nodes}")
+
+        # Query 2: Get topics (aggregated by discipline)
         topics_query = """
         MATCH (n:NodeName)
         WHERE n.UserId = $user_id
@@ -79,7 +141,7 @@ class GraphUIService:
         ORDER BY entity_count DESC
         """
 
-        # Query 2: Get insights (high-confidence nodes >= min_confidence)
+        # Query 3: Get insights (high-confidence nodes >= min_confidence)
         insights_query = """
         MATCH (n:NodeName)
         WHERE n.UserId = $user_id
@@ -97,8 +159,7 @@ class GraphUIService:
         LIMIT 50
         """
 
-        # Query 3: Get sources - aggregated count by entity type
-        # Returns counts of nodes by book_id, highlight_id, writing_id
+        # Query 4: Get sources - aggregated count by entity type
         sources_query = """
         MATCH (n:NodeName)
         WHERE n.UserId = $user_id
@@ -118,10 +179,9 @@ class GraphUIService:
           sum(writing_count) AS total_writing_refs
         """
 
-        # Query 4: Get all nodes with their properties
-        # Exclude internal node types used for tracking (Reading Session, etc.)
-        # Filter by entity IDs and dates if provided
-        nodes_query = """
+        # Query 5: Get nodes with cursor-based pagination
+        # Uses composite index on (UserId, name) for efficient seeking
+        nodes_query_base = """
         MATCH (n:NodeName)
         WHERE n.UserId = $user_id
           AND NOT n.type IN ['Reading Session', 'ReadingSession', 'CommunityHeader', 'CommunitySubheader', 'Book']
@@ -130,6 +190,13 @@ class GraphUIService:
           AND (NOT $has_writing_id OR $writing_id IN n.writing_id)
           AND (NOT $has_date_from OR n.created_at >= $date_from)
           AND (NOT $has_date_to OR n.created_at <= $date_to)
+        """
+
+        # Add cursor condition if provided (efficient with composite index)
+        if limit is not None and cursor:
+            nodes_query_base += "  AND n.name > $cursor\n"
+
+        nodes_query = nodes_query_base + """
         RETURN elementId(n) AS id,
                n.name AS name,
                n.type AS type,
@@ -146,77 +213,10 @@ class GraphUIService:
         ORDER BY n.name
         """
 
-        # Query 5: Get all relationships
-        # Relationships are stored with the relation type as the relationship type
-        # and r.value contains the relation name
-        # Exclude relationships involving internal node types and Book nodes
-        # Filter to only show relationships between nodes that match the filter criteria
-        relationships_query = """
-        MATCH (source:NodeName)-[r]->(target:NodeName)
-        WHERE source.UserId = $user_id AND target.UserId = $user_id
-          AND NOT source.type IN ['Reading Session', 'ReadingSession', 'CommunityHeader', 'CommunitySubheader', 'Book']
-          AND NOT target.type IN ['Reading Session', 'ReadingSession', 'CommunityHeader', 'CommunitySubheader', 'Book']
-          AND (NOT $has_book_id OR ($book_id IN source.book_id AND $book_id IN target.book_id))
-          AND (NOT $has_highlight_id OR ($highlight_id IN source.highlight_id AND $highlight_id IN target.highlight_id))
-          AND (NOT $has_writing_id OR ($writing_id IN source.writing_id AND $writing_id IN target.writing_id))
-          AND (NOT $has_date_from OR (source.created_at >= $date_from AND target.created_at >= $date_from))
-          AND (NOT $has_date_to OR (source.created_at <= $date_to AND target.created_at <= $date_to))
-        RETURN source.name AS source,
-               target.name AS target,
-               r.value AS relation
-        """
-
-        # Build parameters dictionary with boolean flags for conditional filtering
-        # This prevents Cypher injection by using parameterized queries
-
-        # Handle date_to: if it's just a date (no time component), append end-of-day time
-        # This ensures that queries like date_to="2025-02-23" include all timestamps on that day
-        # (e.g., "2025-02-23T22:00:00+00:00" should match)
-        processed_date_to = date_to
-        if date_to is not None and len(date_to) == 10:  # Format: YYYY-MM-DD
-            # Append end-of-day time to include the entire day
-            processed_date_to = f"{date_to}T23:59:59.999999+00:00"
-
-        params = {
-            "user_id": user_id,
-            "min_confidence": min_confidence,
-            "has_book_id": book_id is not None,
-            "book_id": book_id if book_id is not None else 0,
-            "has_highlight_id": highlight_id is not None,
-            "highlight_id": highlight_id if highlight_id is not None else 0,
-            "has_writing_id": writing_id is not None,
-            "writing_id": writing_id if writing_id is not None else 0,
-            "has_date_from": date_from is not None,
-            "date_from": date_from if date_from is not None else "",
-            "has_date_to": date_to is not None,
-            "date_to": processed_date_to if processed_date_to is not None else ""
-        }
-
-        logger.info(f"Query parameters prepared:")
-        logger.info(f"  has_book_id={params['has_book_id']}, book_id={params['book_id']}")
-        logger.info(f"  has_highlight_id={params['has_highlight_id']}, highlight_id={params['highlight_id']}")
-        logger.info(f"  has_writing_id={params['has_writing_id']}, writing_id={params['writing_id']}")
-        logger.info(f"  has_date_from={params['has_date_from']}, date_from={params['date_from']}")
-        logger.info(f"  has_date_to={params['has_date_to']}, date_to={params['date_to']}")
-        logger.info(f"  min_confidence={params['min_confidence']}")
-
-        # Log which filters are active
-        active_filters = []
-        if params['has_book_id']:
-            active_filters.append(f"book_id={params['book_id']}")
-        if params['has_highlight_id']:
-            active_filters.append(f"highlight_id={params['highlight_id']}")
-        if params['has_writing_id']:
-            active_filters.append(f"writing_id={params['writing_id']}")
-        if params['has_date_from']:
-            active_filters.append(f"date_from={params['date_from']}")
-        if params['has_date_to']:
-            active_filters.append(f"date_to={params['date_to']}")
-
-        if active_filters:
-            logger.info(f"Active filters: {', '.join(active_filters)}")
-        else:
-            logger.info("No filters active - returning all data")
+        # Add LIMIT only if pagination is enabled
+        if limit is not None:
+            # Fetch one extra node to check if there are more pages
+            nodes_query += f"LIMIT {limit + 1}\n"
 
         # Execute all queries
         async with neo4j_manager.driver.session() as session:
@@ -254,36 +254,38 @@ class GraphUIService:
             sources_data = await sources_result.data()
             logger.info(f"Sources query returned {len(sources_data)} results")
 
-            # Nodes - clean up the properties to avoid duplication
+            # Nodes (with pagination)
             logger.info("Executing nodes query...")
             nodes_result = await session.run(nodes_query, params)
             nodes_data = await nodes_result.data()
             logger.info(f"Nodes query returned {len(nodes_data)} results")
+
+            # Process pagination metadata
+            has_more = False
+            next_cursor = None
+            if limit is not None and len(nodes_data) > limit:
+                has_more = True
+                # Remove the extra node we fetched
+                nodes_data = nodes_data[:limit]
+                # Set next_cursor to the last node's name
+                next_cursor = nodes_data[-1]["name"]
 
             nodes = []
             for node in nodes_data:
                 # Remove UserId and other metadata from properties dict
                 props = node.get("properties", {})
                 props.pop("UserId", None)
-                props.pop("name", None)  # Already in top-level
-                props.pop("type", None)  # Already in top-level
-
-                # Remove PKG properties from props dict since they're in top-level
+                props.pop("name", None)
+                props.pop("type", None)
                 props.pop("discipline", None)
                 props.pop("bloom_level", None)
                 props.pop("confidence", None)
-                props.pop("chunk_ids", None)  # Already in top-level
-
-                # Remove entity ID arrays from props dict since they're in top-level
+                props.pop("chunk_ids", None)
                 props.pop("book_id", None)
                 props.pop("highlight_id", None)
                 props.pop("writing_id", None)
-
-                # Remove temporal fields from props dict since they're in top-level
                 props.pop("created_at", None)
                 props.pop("bloom_history", None)
-
-                # Remove embedding vector (never send to client)
                 props.pop("embedding", None)
 
                 # Parse bloom_history from JSON string if present
@@ -303,29 +305,63 @@ class GraphUIService:
                     "discipline": node.get("discipline"),
                     "bloom_level": node.get("bloom_level"),
                     "confidence": node.get("confidence"),
-                    "chunk_ids": node.get("chunk_ids", []),  # Array of chunk UUIDs
-                    "book_id": node.get("book_id", []),  # Array of book IDs
-                    "highlight_id": node.get("highlight_id", []),  # Array of highlight IDs
-                    "writing_id": node.get("writing_id", []),  # Array of writing IDs
-                    "created_at": node.get("created_at"),  # ISO 8601 timestamp
-                    "bloom_history": bloom_history,  # Array of Bloom level updates
-                    "properties": props  # Only custom properties remain
+                    "chunk_ids": node.get("chunk_ids", []),
+                    "book_id": node.get("book_id", []),
+                    "highlight_id": node.get("highlight_id", []),
+                    "writing_id": node.get("writing_id", []),
+                    "created_at": node.get("created_at"),
+                    "bloom_history": bloom_history,
+                    "properties": props
                 })
 
-            # Relationships
-            logger.info("Executing relationships query...")
-            rels_result = await session.run(relationships_query, params)
-            relationships = await rels_result.data()
-            logger.info(f"Relationships query returned {len(relationships)} results")
+        # Query 6: Get relationships (only between returned nodes)
+        # Build list of node names for filtering
+        node_names = [node["name"] for node in nodes]
+
+        if node_names:
+            relationships_query = """
+            MATCH (source:NodeName)-[r]->(target:NodeName)
+            WHERE source.UserId = $user_id AND target.UserId = $user_id
+              AND source.name IN $node_names
+              AND target.name IN $node_names
+              AND NOT source.type IN ['Reading Session', 'ReadingSession', 'CommunityHeader', 'CommunitySubheader', 'Book']
+              AND NOT target.type IN ['Reading Session', 'ReadingSession', 'CommunityHeader', 'CommunitySubheader', 'Book']
+            RETURN source.name AS source,
+                   target.name AS target,
+                   r.value AS relation
+            """
+
+            async with neo4j_manager.driver.session() as session:
+                logger.info("Executing relationships query...")
+                rels_params = {**params, "node_names": node_names}
+                rels_result = await session.run(relationships_query, rels_params)
+                relationships = await rels_result.data()
+                logger.info(f"Relationships query returned {len(relationships)} results")
+        else:
+            relationships = []
 
         logger.info(f"Final results summary:")
         logger.info(f"  Topics: {len(topics_list)}, Insights: {len(insights_data)}, Sources: {len(sources_data)}")
         logger.info(f"  Nodes: {len(nodes)}, Relationships: {len(relationships)}")
 
-        return {
+        # Build response
+        response = {
             "topics": topics_list,
             "insights": insights_data,
             "sources": sources_data,
             "nodes": nodes,
             "relationships": relationships
         }
+
+        # Add pagination metadata only if limit was specified
+        if limit is not None:
+            response["pagination"] = {
+                "total_nodes": total_nodes,
+                "returned_nodes": len(nodes),
+                "has_more": has_more,
+                "next_cursor": next_cursor,
+                "limit": limit
+            }
+            logger.info(f"  Pagination: total={total_nodes}, returned={len(nodes)}, has_more={has_more}, next_cursor={next_cursor}")
+
+        return response
