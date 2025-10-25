@@ -130,13 +130,22 @@ async def test_rag_query(test_client, api_test_user):
     assert response.status_code == 200
     assert "answer" in response.json()
 
-async def test_rag_query_non_existent_user(test_client):
-    """Test that a RAG query for a non-existent user returns a 404."""
-    response = test_client.post(
-        "/api/v1/users/non-existent-user/rag/query",
-        json={"query": "Does not matter"}
-    )
-    assert response.status_code == 404
+async def test_rag_query_non_existent_user(test_client, isolated_graph_ops):
+    """Test that a RAG query for a non-existent user auto-creates the user and succeeds."""
+    async for graph_ops, user_id in isolated_graph_ops:
+        # Delete user to ensure they don't exist
+        await graph_ops.delete_user(user_id)
+
+        response = test_client.post(
+            f"/api/v1/users/{user_id}/rag/query",
+            json={"query": "Does not matter"}
+        )
+        # Should succeed with auto-created user
+        assert response.status_code == 200
+        assert "answer" in response.json()
+
+        # Verify user was auto-created
+        assert await graph_ops.user_exists(user_id)
 
 async def test_rag_query_for_user_with_no_graph(test_client, isolated_graph_ops):
     """Test that a RAG query for a user with no data returns a clean response."""
@@ -176,13 +185,22 @@ async def test_ask_insights(test_client, api_test_user):
     assert response.status_code == 200
     assert response.json() is not None
 
-async def test_ask_non_existent_user(test_client):
-    """Test that an ask query for a non-existent user returns a 404."""
-    response = test_client.post(
-        "/api/v1/users/non-existent-user/ask",
-        json={"query": "Doesn't matter", "output_schema": {}}
-    )
-    assert response.status_code == 404
+async def test_ask_non_existent_user(test_client, isolated_graph_ops):
+    """Test that an ask query for a non-existent user auto-creates the user and succeeds."""
+    async for graph_ops, user_id in isolated_graph_ops:
+        # Delete user to ensure they don't exist
+        await graph_ops.delete_user(user_id)
+
+        response = test_client.post(
+            f"/api/v1/users/{user_id}/ask",
+            json={"query": "Doesn't matter", "output_schema": {"result": "string"}}
+        )
+        # Should succeed with auto-created user
+        assert response.status_code == 200
+        assert response.json() is not None
+
+        # Verify user was auto-created
+        assert await graph_ops.user_exists(user_id)
 
 async def test_ask_for_user_with_no_graph(test_client, isolated_graph_ops):
     """Test that an ask query for a user with no data returns a clean response."""

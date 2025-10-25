@@ -15,7 +15,7 @@ from persona.services.ask_service import AskService
 from persona.services.custom_data_service import CustomDataService
 from persona.services.graph_ui_service import GraphUIService
 from persona.models.schema import LearnRequest, LearnResponse, AskRequest, AskResponse, GraphSchema, CustomGraphUpdate, CustomNodeData, CustomRelationshipData, GraphUIDataResponse
-from server.dependencies import get_graph_ops
+from server.dependencies import get_graph_ops, ensure_user_exists
 from server.logging_config import get_logger
 import re
 
@@ -96,23 +96,20 @@ async def delete_user(
 
 @router.post("/users/{user_id}/ingest", status_code=201)
 async def ingest_data(
-    user_id: str = Path(..., description="The unique identifier for the user"),
+    user_id: str = Depends(ensure_user_exists),  # Auto-creates user if doesn't exist
     data: UnstructuredData = Body(...),
     graph_ops: GraphOps = Depends(get_graph_ops)
 ):
     try:
         logger.info(f"Ingesting data for user: {user_id}")
-        
-        # Validate user exists
-        if not await graph_ops.user_exists(user_id):
-            logger.warning(f"Attempted to ingest data for non-existent user: {user_id}")
-            raise HTTPException(status_code=404, detail=f"User {user_id} not found")
-            
+
+        # User existence check removed - handled by ensure_user_exists dependency
+
         # Validate data content
         if not data.content or len(data.content.strip()) == 0:
             logger.warning(f"Empty content provided for user {user_id}")
             raise HTTPException(status_code=400, detail="Content cannot be empty")
-            
+
         await IngestService.ingest_data(user_id, data, graph_ops)
         logger.info(f"Data ingested successfully for user {user_id}")
         return {"message": "Data ingested successfully"}
@@ -130,7 +127,7 @@ async def ingest_data(
 
 @router.post("/users/{user_id}/rag/query", response_model=RAGResponse)
 async def rag_query(
-    user_id: str = Path(..., description="The unique identifier for the user"),
+    user_id: str = Depends(ensure_user_exists),  # Auto-creates user if doesn't exist
     query: RAGQuery = Body(...),
     graph_ops: GraphOps = Depends(get_graph_ops)
 ):
@@ -138,11 +135,6 @@ async def rag_query(
         if not query or not query.query:
             logger.warning(f"Empty query received for user {user_id}")
             raise HTTPException(status_code=400, detail="Query is required")
-            
-        # Validate user exists
-        if not await graph_ops.user_exists(user_id):
-            logger.warning(f"RAG query attempted for non-existent user: {user_id}")
-            raise HTTPException(status_code=404, detail=f"User {user_id} not found")
             
         # Validate query length
         if len(query.query.strip()) > 1000:
@@ -169,7 +161,7 @@ async def rag_query(
 
 @router.post("/users/{user_id}/rag/query-vector", status_code=status.HTTP_200_OK)
 async def rag_query_vector(
-    user_id: str = Path(..., description="The unique identifier for the user"),
+    user_id: str = Depends(ensure_user_exists),  # Auto-creates user if doesn't exist
     query: RAGQuery = Body(...),
     graph_ops: GraphOps = Depends(get_graph_ops)
 ):
@@ -177,12 +169,7 @@ async def rag_query_vector(
         if not query or not query.query:
             logger.warning(f"Empty vector query received for user {user_id}")
             raise HTTPException(status_code=400, detail="Query is required")
-            
-        # Validate user exists
-        if not await graph_ops.user_exists(user_id):
-            logger.warning(f"Vector RAG query attempted for non-existent user: {user_id}")
-            raise HTTPException(status_code=404, detail=f"User {user_id} not found")
-            
+
         logger.info(f"Processing vector RAG query for user {user_id}: {query.query[:100]}...")
         rag = RAGInterface(user_id)
         rag.graph_ops = graph_ops
@@ -204,7 +191,7 @@ async def rag_query_vector(
 
 @router.post("/users/{user_id}/ask", response_model=AskResponse, status_code=status.HTTP_200_OK)
 async def ask_insights(
-    user_id: str = Path(..., description="The unique identifier for the user"),
+    user_id: str = Depends(ensure_user_exists),  # Auto-creates user if doesn't exist
     ask_request: AskRequest = Body(...),
     graph_ops: GraphOps = Depends(get_graph_ops)
 ):
@@ -216,12 +203,7 @@ async def ask_insights(
         if not ask_request.query or len(ask_request.query.strip()) == 0:
             logger.warning(f"Empty query in ask request for user {user_id}")
             raise HTTPException(status_code=400, detail="Query is required")
-            
-        # Validate user exists
-        if not await graph_ops.user_exists(user_id):
-            logger.warning(f"Ask insights attempted for non-existent user: {user_id}")
-            raise HTTPException(status_code=404, detail=f"User {user_id} not found")
-            
+
         logger.info(f"Processing ask insights for user {user_id}: {ask_request.query[:100]}...")
         response = await AskService.ask_insights(user_id, ask_request, graph_ops)
         logger.info(f"Ask insights completed successfully for user {user_id}")
@@ -242,7 +224,7 @@ async def ask_insights(
 
 @router.post("/users/{user_id}/custom-data", status_code=status.HTTP_200_OK)
 async def update_custom_data(
-    user_id: str = Path(..., description="The unique identifier for the user"),
+    user_id: str = Depends(ensure_user_exists),  # Auto-creates user if doesn't exist
     update: CustomGraphUpdate = Body(...),
     graph_ops: GraphOps = Depends(get_graph_ops)
 ):
@@ -253,12 +235,7 @@ async def update_custom_data(
         if not update:
             logger.warning(f"Empty custom data update received for user {user_id}")
             raise HTTPException(status_code=400, detail="Request body is required")
-            
-        # Validate user exists
-        if not await graph_ops.user_exists(user_id):
-            logger.warning(f"Custom data update attempted for non-existent user: {user_id}")
-            raise HTTPException(status_code=404, detail=f"User {user_id} not found")
-            
+
         # Validate update content
         if not update.nodes and not update.relationships:
             logger.warning(f"Empty custom data update for user {user_id}")
@@ -283,7 +260,7 @@ async def update_custom_data(
 
 @router.get("/users/{user_id}/graph-ui-data", response_model=GraphUIDataResponse, status_code=status.HTTP_200_OK)
 async def get_graph_ui_data(
-    user_id: str = Path(..., description="The unique identifier for the user"),
+    user_id: str = Depends(ensure_user_exists),  # Auto-creates user if doesn't exist
     book_id: Optional[int] = Query(None, description="Filter nodes by book ID"),
     highlight_id: Optional[int] = Query(None, description="Filter nodes by highlight ID"),
     writing_id: Optional[int] = Query(None, description="Filter nodes by writing ID"),
@@ -311,11 +288,6 @@ async def get_graph_ui_data(
     try:
         if not is_valid_user_id(user_id):
             raise ValueError("Invalid user ID format.")
-
-        # Validate user exists
-        if not await graph_ops.user_exists(user_id):
-            logger.warning(f"Graph UI data requested for non-existent user: {user_id}")
-            raise HTTPException(status_code=404, detail=f"User {user_id} not found")
 
         logger.info(f"Fetching graph UI data for user {user_id} with filters - book_id: {book_id}, highlight_id: {highlight_id}, writing_id: {writing_id}, date_from: {date_from}, date_to: {date_to}")
         result = await GraphUIService.get_graph_ui_data(
