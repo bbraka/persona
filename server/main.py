@@ -14,7 +14,8 @@ from server.config import BaseConfig
 config = BaseConfig()
 
 # Initialize logging
-setup_logging(log_level="INFO")
+log_level = os.getenv("LOG_LEVEL", "INFO")
+setup_logging(log_level=log_level)
 logger = get_logger(__name__)
 
 # Enable remote debugging if DEBUG environment variable is set

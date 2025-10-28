@@ -14,12 +14,17 @@ class AskService:
         rag.graph_ops = graph_ops
         rag.graph_context_retriever = GraphContextRetriever(graph_ops)
 
+        # Treat 0 as None (no filter) for entity IDs
+        book_id = ask_request.book_id if ask_request.book_id else None
+        highlight_id = ask_request.highlight_id if ask_request.highlight_id else None
+        writing_id = ask_request.writing_id if ask_request.writing_id else None
+
         # Get context using existing RAG functionality with entity ID filters
         context = await rag.get_context(
             ask_request.query,
-            book_id=ask_request.book_id,
-            highlight_id=ask_request.highlight_id,
-            writing_id=ask_request.writing_id
+            book_id=book_id,
+            highlight_id=highlight_id,
+            writing_id=writing_id
         )
 
         structured_response = await generate_structured_insights(ask_request, context)
