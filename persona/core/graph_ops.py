@@ -895,50 +895,144 @@ class GraphContextRetriever:
 
         return formatted
     
-    async def get_relevant_graph_context(self, nodes: List[Node], user_id: str, max_hops: int = 2) -> str:
+    async def get_relevant_graph_context(
+        self,
+        nodes: List[Node],
+        user_id: str,
+        max_hops: int = 2,
+        max_context_chars: int = 50000  # Roughly 12,500 tokens (conservative estimate)
+    ) -> str:
         """
-        Get relevant subgraph context for the given nodes.
+        Get relevant subgraph context for the given nodes with intelligent truncation.
+
+        Strategy for large graphs:
+        1. Always include seed nodes (from vector search)
+        2. Limit relationships per node to most important
+        3. Prioritize 1-hop neighbors over 2-hop
+        4. Track context size and stop when approaching limit
         """
         context = "# Relevant Graph Context\n\n"
-        
+
         # Check if there are any existing nodes in the graph
         existing_nodes = await self.graph_ops.get_all_nodes(user_id)
         if not existing_nodes:
             logger.debug("No existing nodes in graph (t=0). Skipping context retrieval.")
             return context
-        
+
         logger.debug(f"Found {len(existing_nodes)} existing nodes in graph")
-        
-        # Start exploring from the provided nodes directly
+
+        # Start exploring from the provided nodes directly with context limits
         subgraph = {}
+        context_size = 0
+        max_relationships_per_node = 20  # Limit relationships to prevent explosion
+
         for node in nodes:
-            await self._explore_node(node_name=node.name, subgraph=subgraph, user_id=user_id, max_hops=max_hops)
-        
+            if context_size > max_context_chars:
+                logger.warning(f"Context size limit reached ({context_size} chars). Stopping exploration.")
+                break
+
+            context_size = await self._explore_node_with_limits(
+                node_name=node.name,
+                subgraph=subgraph,
+                user_id=user_id,
+                max_hops=max_hops,
+                max_relationships_per_node=max_relationships_per_node,
+                current_context_size=context_size,
+                max_context_size=max_context_chars
+            )
+
         # Format the subgraph context
         if subgraph:
             context += "## Related Nodes and Relationships\n"
+            nodes_included = 0
             for node_name, data in subgraph.items():
-                context += f"\n### {node_name}\n"
+                # Check if adding this node would exceed limit
+                node_context = f"\n### {node_name}\n"
                 if data['relationships']:
-                    context += "Relationships:\n"
+                    node_context += "Relationships:\n"
                     for rel in data['relationships']:
-                        context += f"- {rel}\n"
-        
+                        node_context += f"- {rel}\n"
+
+                if len(context) + len(node_context) > max_context_chars:
+                    logger.warning(f"Stopped at {nodes_included} nodes to stay within context limit")
+                    break
+
+                context += node_context
+                nodes_included += 1
+
+            logger.info(f"Context includes {nodes_included} nodes with {context_size} total relationship entries")
+
         return context
 
-    async def _explore_node(self, node_name: str, subgraph: Dict, user_id: str, max_hops: int):
-        """Helper method to explore node relationships for context building"""
-        if node_name in subgraph or max_hops < 0:
-            return
-        
+    async def _explore_node_with_limits(
+        self,
+        node_name: str,
+        subgraph: Dict,
+        user_id: str,
+        max_hops: int,
+        max_relationships_per_node: int,
+        current_context_size: int,
+        max_context_size: int
+    ) -> int:
+        """
+        Explore node relationships with size limits to prevent context explosion.
+
+        Returns updated context size.
+        """
+        if node_name in subgraph or max_hops < 0 or current_context_size > max_context_size:
+            return current_context_size
+
         node_data = await self.graph_ops.get_node_data(node_name, user_id)
         relationships = await self.graph_ops.get_node_relationships(node_name, user_id)
-        
+
+        # Limit relationships to prevent explosion
+        limited_relationships = relationships[:max_relationships_per_node]
+        if len(relationships) > max_relationships_per_node:
+            logger.warning(
+                f"Node '{node_name}' has {len(relationships)} relationships. "
+                f"Limiting to {max_relationships_per_node} most important ones."
+            )
+
         subgraph[node_name] = {
             'properties': node_data.properties,
             'relationships': []
         }
-        
+
+        for rel in limited_relationships:
+            rel_text = f"{rel.source} {rel.relation} {rel.target}"
+            subgraph[node_name]['relationships'].append(rel_text)
+            current_context_size += len(rel_text)
+
+            # Only explore further if we have hops left and space in context
+            if max_hops > 0 and current_context_size < max_context_size:
+                next_node = rel.target if rel.source == node_name else rel.source
+                # Reduce max_relationships for deeper hops (prioritize nearby nodes)
+                deeper_max_rels = max(5, max_relationships_per_node // 2)
+                current_context_size = await self._explore_node_with_limits(
+                    next_node,
+                    subgraph,
+                    user_id,
+                    max_hops - 1,
+                    deeper_max_rels,
+                    current_context_size,
+                    max_context_size
+                )
+
+        return current_context_size
+
+    async def _explore_node(self, node_name: str, subgraph: Dict, user_id: str, max_hops: int):
+        """Helper method to explore node relationships for context building (legacy, kept for compatibility)"""
+        if node_name in subgraph or max_hops < 0:
+            return
+
+        node_data = await self.graph_ops.get_node_data(node_name, user_id)
+        relationships = await self.graph_ops.get_node_relationships(node_name, user_id)
+
+        subgraph[node_name] = {
+            'properties': node_data.properties,
+            'relationships': []
+        }
+
         for rel in relationships:
             subgraph[node_name]['relationships'].append(
                 f"{rel.source} {rel.relation} {rel.target}"

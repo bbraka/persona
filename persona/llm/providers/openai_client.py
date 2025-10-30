@@ -64,6 +64,30 @@ class OpenAIClient(BaseLLMClient):
                 usage=response.usage.model_dump() if response.usage else None
             )
             
+        except openai.APIStatusError as e:
+            error_msg = f"OpenAI chat error: {e}"
+
+            # Log rate limit headers if available (from OpenAI APIStatusError)
+            if e.response is not None:
+                headers = e.response.headers
+                rate_limit_info = {
+                    'limit_requests': headers.get('x-ratelimit-limit-requests'),
+                    'limit_tokens': headers.get('x-ratelimit-limit-tokens'),
+                    'remaining_requests': headers.get('x-ratelimit-remaining-requests'),
+                    'remaining_tokens': headers.get('x-ratelimit-remaining-tokens'),
+                    'reset_requests': headers.get('x-ratelimit-reset-requests'),
+                    'reset_tokens': headers.get('x-ratelimit-reset-tokens'),
+                }
+                # Filter out None values
+                rate_limit_info = {k: v for k, v in rate_limit_info.items() if v is not None}
+                if rate_limit_info:
+                    error_msg += f"\nRate limit info: {rate_limit_info}"
+                else:
+                    # If no rate limit headers, log all headers for debugging
+                    error_msg += f"\nResponse headers: {dict(headers)}"
+
+            logger.error(error_msg)
+            raise
         except Exception as e:
             logger.error(f"OpenAI chat error: {e}")
             raise
@@ -84,10 +108,35 @@ class OpenAIClient(BaseLLMClient):
             
             return [data.embedding for data in response.data]
             
+        except openai.APIStatusError as e:
+            error_msg = f"OpenAI embeddings error: {e}"
+
+            # Log rate limit headers if available (from OpenAI APIStatusError)
+            if e.response is not None:
+                headers = e.response.headers
+                rate_limit_info = {
+                    'limit_requests': headers.get('x-ratelimit-limit-requests'),
+                    'limit_tokens': headers.get('x-ratelimit-limit-tokens'),
+                    'remaining_requests': headers.get('x-ratelimit-remaining-requests'),
+                    'remaining_tokens': headers.get('x-ratelimit-remaining-tokens'),
+                    'reset_requests': headers.get('x-ratelimit-reset-requests'),
+                    'reset_tokens': headers.get('x-ratelimit-reset-tokens'),
+                }
+                # Filter out None values
+                rate_limit_info = {k: v for k, v in rate_limit_info.items() if v is not None}
+                if rate_limit_info:
+                    error_msg += f"\nRate limit info: {rate_limit_info}"
+                else:
+                    # If no rate limit headers, log all headers for debugging
+                    error_msg += f"\nResponse headers: {dict(headers)}"
+
+            logger.error(error_msg)
+            # Return empty embeddings to maintain alignment with input while preserving type
+            return [[] for _ in texts]
         except Exception as e:
             logger.error(f"OpenAI embeddings error: {e}")
-            # Return None embeddings to maintain alignment with input
-            return [None] * len(texts)
+            # Return empty embeddings to maintain alignment with input while preserving type
+            return [[] for _ in texts]
     
     def get_provider_name(self) -> str:
         return "openai"
