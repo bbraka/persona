@@ -166,7 +166,7 @@ class GraphOps:
     async def get_node_data(self, node_name: str, user_id: str) -> NodeModel:
         if not await self.user_exists(user_id):
             logger.warning(f"User {user_id} does not exist. Cannot get node data.")
-            return NodeModel(name=node_name, type=None, embedding=None)
+            return NodeModel(name=node_name, type=None, embedding=None, created_at=None, bloom_history=[])
 
         node_data = await self.neo4j_manager.get_node_data(node_name, user_id)
         if node_data:
@@ -206,7 +206,13 @@ class GraphOps:
                 created_at=created_at_str,  # Keep as string in NodeModel
                 bloom_history=bloom_history_data  # Keep as dict list in NodeModel
             )
-        return NodeModel(name=node_name, type=None, embedding=None)
+        return NodeModel(
+            name=node_name,
+            type=None,
+            embedding=None,
+            created_at=None,
+            bloom_history=[]
+        )
 
     async def get_node_relationships(self, node_name: str, user_id: str) -> List[RelationshipModel]:
         if not await self.user_exists(user_id):

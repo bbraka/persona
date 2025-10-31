@@ -164,6 +164,23 @@ The nodes will be indexed in a knowledge graph and vector database hybrid system
 
 Principles for Node Extraction:
 
+⚠️ CRITICAL: Node Names Must Be Nouns
+- Node names should be nouns or noun phrases that represent entities or concepts
+- If you see relationship words ('versus', 'and', 'between', 'from', 'with'), ask yourself:
+  * Is this a UNIVERSAL CONCEPT, or archetype, or title, or phrase? (e.g., "Good vs Evil", "Mother and Child", "Hero's Journey", "Kramer vs Kramer", "Johnson vs USA", "Polly wants a cracker") → Single node
+  * Is this comparing SPECIFIC INSTANCES? (e.g., "Libertarianism versus Classical liberalism", "Apple versus Samsung", "Harry likes apples") → Split into separate nodes with relationship
+- Examples:
+  * ✓ CORRECT: "Libertarianism" (node), "Classical liberalism" (node), relationship: CONTRASTS_WITH
+  * ✗ WRONG: "Libertarianism versus Classical liberalism" (single node with verb)
+  * ✓ CORRECT: "Good versus Evil" (single node - universal philosophical concept)
+  * ✓ CORRECT: "David versus Goliath" (single node - archetypal narrative pattern)
+
+⚠️ CRITICAL: Conservative Node Creation
+- Aim for 3-5 well-connected, reusable nodes rather than 10 disconnected ones
+- Create nodes that can connect across different contexts and sources
+- Prefer fewer rich nodes with multiple relationships over many isolated nodes
+- Quality over quantity: Each node should be meaningful and reusable
+
 INCLUDE exactly these fields per node:
 - name: Concise, generalizable concept (3-8 words) that represents transferable knowledge, not narrative specifics.
 - type: One of: Identity · Memory · Preference · Trait · Narrative · Goal · Event · State · Relationship · Belief · Other types shared below.
@@ -245,8 +262,13 @@ INCLUDE exactly these fields per node:
 
 What to Extract - CREATE SEPARATE NODES FOR EACH ENTITY:
 
+⚠️ CONSERVATIVE EXTRACTION: Focus on quality over quantity
+- Extract 3-5 core, reusable concepts rather than exhaustively listing every detail
+- Each node should be meaningful enough to connect to other sources and contexts
+- Prefer creating nodes that will have multiple relationships over isolated facts
+
 For each entity or concept in the text, create an individual node with:
-- Name: Concise identifier for the entity
+- Name: Concise identifier for the entity (MUST be noun/noun phrase, not contain verbs like 'versus', 'between', 'and' unless it's a universal archetype)
 - Type: Category (see types below)
 - A brief description or definition in context (stored in properties)
 
@@ -305,6 +327,7 @@ FOR PERSONAL USER DATA:
 
 Guidelines for Node Creation:
    - **For books/content**: Prioritize TRANSFERABLE CONCEPTS over plot details. Include major characters/events only if culturally significant.
+   - **Avoid verb-based node names**: If comparing/contrasting concepts, create separate nodes with relationships UNLESS it's a universal archetype (e.g., "David versus Goliath" = archetype, but "Hayek versus Keynes" = two economist nodes with CONTRASTS_WITH relationship).
    - **chunk_ids usage - STRICT VALIDATION REQUIRED**:
      * ONLY include chunk_ids if you see VALID UUIDs in the input (format: ["xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"])
      * Before including chunk_ids, verify EACH value has exactly 5 groups of hexadecimal characters: 8-4-4-4-12 digits separated by hyphens
