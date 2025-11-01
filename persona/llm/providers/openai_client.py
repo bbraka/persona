@@ -96,7 +96,7 @@ class OpenAIClient(BaseLLMClient):
         """Generate embeddings using OpenAI API"""
         if not texts:
             return []
-        
+
         try:
             # Use sync client for embeddings as it's more stable
             response = self.sync_client.embeddings.create(
@@ -105,11 +105,19 @@ class OpenAIClient(BaseLLMClient):
                 dimensions=1536,
                 **kwargs
             )
-            
+
             return [data.embedding for data in response.data]
-            
+
         except openai.APIStatusError as e:
             error_msg = f"OpenAI embeddings error: {e}"
+            error_msg += f"\nBatch size: {len(texts)} texts"
+
+            # Show samples of texts that failed (first 100 chars of first few texts)
+            sample_texts = texts[:3]
+            error_msg += f"\nSample texts (first {len(sample_texts)}):"
+            for i, text in enumerate(sample_texts):
+                preview = text[:100].replace('\n', ' ')
+                error_msg += f"\n  [{i}] {preview}..."
 
             # Log rate limit headers if available (from OpenAI APIStatusError)
             if e.response is not None:
@@ -134,7 +142,9 @@ class OpenAIClient(BaseLLMClient):
             # Return empty embeddings to maintain alignment with input while preserving type
             return [[] for _ in texts]
         except Exception as e:
-            logger.error(f"OpenAI embeddings error: {e}")
+            error_msg = f"OpenAI embeddings error: {e}"
+            error_msg += f"\nBatch size: {len(texts)} texts"
+            logger.error(error_msg)
             # Return empty embeddings to maintain alignment with input while preserving type
             return [[] for _ in texts]
     

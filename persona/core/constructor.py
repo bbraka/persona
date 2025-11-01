@@ -65,7 +65,17 @@ class GraphConstructor:
             mixed_relationships = await self.generate_cross_relationships(new_nodes, existing_context)
             # Filter for stronger relationships (we might want to add a confidence score)
             relationships.extend(mixed_relationships)
-        
+
+        # Phase 3: Book-scoped relationships (if this data is from a book)
+        if data.metadata and 'book_id' in data.metadata:
+            try:
+                book_id = int(data.metadata['book_id'])
+                book_relationships = await self.generate_book_scoped_relationships(new_nodes, book_id)
+                relationships.extend(book_relationships)
+                logger.info(f"Created {len(book_relationships)} book-scoped relationships for book {book_id}")
+            except (ValueError, KeyError) as e:
+                logger.debug(f"Could not extract book_id for book-scoped relationships: {e}")
+
         # Create the graph update - nodes with type information and PKG properties
         # Generate embeddings for each node
         node_texts = [node.name for node in new_nodes]
@@ -285,6 +295,99 @@ class GraphConstructor:
         llm_relationships, _ = await get_relationships(llm_nodes, existing_context)  # Ignore the ID mapping
         # Convert LLM relationships to schema relationships
         return [Relationship(source=rel.source, target=rel.target, relation=rel.relation) for rel in llm_relationships]
+
+    async def generate_book_scoped_relationships(self, new_nodes: List[Node], book_id: int) -> List[Relationship]:
+        """
+        Generate relationships between new nodes and existing nodes from the SAME book
+        using vector similarity search filtered by book_id.
+
+        This enables connections between reading progress data and highlights from the same source.
+
+        Args:
+            new_nodes: Newly extracted nodes
+            book_id: Book ID to filter by
+
+        Returns:
+            List of relationships between new and existing same-book nodes
+        """
+        if self.graph_ops is None:
+            raise RuntimeError("GraphConstructor must be used as an async context manager")
+
+        relationships = []
+
+        # Generate embeddings for new nodes if not already present
+        nodes_needing_embeddings = [node for node in new_nodes if not hasattr(node, 'embedding') or not node.embedding]
+        if nodes_needing_embeddings:
+            node_texts = [node.name for node in nodes_needing_embeddings]
+            embeddings = generate_embeddings(node_texts)
+            for node, embedding in zip(nodes_needing_embeddings, embeddings):
+                node.embedding = embedding
+
+        # For each new node, find related nodes from the same book
+        for node in new_nodes:
+            if not hasattr(node, 'embedding') or not node.embedding:
+                continue
+
+            try:
+                # Vector search filtered by book_id
+                similar_nodes = await self.graph_ops.neo4j_manager.query_text_similarity(
+                    keyword_embedding=node.embedding,
+                    user_id=self.user_id,
+                    book_id=book_id,  # Key: filter to same book only
+                    limit=10  # Higher limit since we're pre-filtering by book
+                )
+
+                if not similar_nodes:
+                    continue
+
+                # Filter to meaningful similarity (lower threshold for same book)
+                # Also exclude the node itself if it was already created
+                relevant_nodes = [
+                    n for n in similar_nodes
+                    if n.get('score', 0) >= 0.70 and n.get('nodeName') != node.name
+                ]
+
+                if not relevant_nodes:
+                    continue
+
+                # Format context for LLM to generate appropriate relationships
+                context = self._format_nodes_for_context(relevant_nodes)
+
+                # Use LLM to generate relationships with the same-book context
+                node_relationships = await self.generate_cross_relationships([node], context)
+                relationships.extend(node_relationships)
+
+                logger.debug(
+                    f"Found {len(node_relationships)} book-scoped relationships for node '{node.name}' "
+                    f"(book_id: {book_id}, similar nodes: {len(relevant_nodes)})"
+                )
+
+            except Exception as e:
+                logger.warning(f"Error finding book-scoped relationships for node '{node.name}': {e}")
+                continue
+
+        return relationships
+
+    def _format_nodes_for_context(self, nodes: List[Dict[str, Any]]) -> str:
+        """
+        Format a list of similar nodes into context string for LLM relationship generation.
+
+        Args:
+            nodes: List of node dicts from vector search (with 'nodeName', 'score', etc.)
+
+        Returns:
+            Formatted context string
+        """
+        if not nodes:
+            return ""
+
+        context_parts = ["Existing related nodes from the same source:\n"]
+        for i, node in enumerate(nodes, 1):
+            node_name = node.get('nodeName', 'Unknown')
+            score = node.get('score', 0.0)
+            context_parts.append(f"{i}. {node_name} (similarity: {score:.2f})")
+
+        return "\n".join(context_parts)
 
     async def discover_new_relationships(self, new_context: str, existing_context: str) -> List[Relationship]:
         """

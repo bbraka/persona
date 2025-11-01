@@ -70,7 +70,9 @@ class GraphOps:
                 node_name=node.name,
                 node_type=node.type or "",
                 user_id=user_id,
-                embedding=node.embedding if hasattr(node, 'embedding') else None
+                embedding=node.embedding if hasattr(node, 'embedding') else None,
+                discipline=node.properties.get('discipline') if hasattr(node, 'properties') and node.properties else None,
+                book_id=node.book_id[0] if hasattr(node, 'book_id') and node.book_id and len(node.book_id) > 0 else None
             )
 
             if similar:
@@ -358,7 +360,9 @@ class GraphOps:
                 node_name=node.name,
                 node_type=node.type or "",
                 user_id=user_id,
-                embedding=node.embedding
+                embedding=node.embedding,
+                discipline=node.properties.get('discipline') if node.properties else None,
+                book_id=node.book_id[0] if node.book_id and len(node.book_id) > 0 else None
             )
 
             if similar:

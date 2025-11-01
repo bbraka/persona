@@ -267,6 +267,20 @@ What to Extract - CREATE SEPARATE NODES FOR EACH ENTITY:
 - Each node should be meaningful enough to connect to other sources and contexts
 - Prefer creating nodes that will have multiple relationships over isolated facts
 
+⚠️ User Notes and Comments
+When the input contains user-written notes/comments on highlights (e.g., "Note: Rand's issue is exactly being extreme!"):
+- Extract the user's insight/reaction as a node when it represents a meaningful concept or evaluation
+- User notes should be extracted IN ADDITION TO concepts from the highlighted text, not instead of them
+- Apply normal Bloom level validation rules - user notes don't automatically mean higher levels; validate correctness
+- Example:
+  * Highlighted text: "Ayn Rand believed in absolute individual rights"
+  * User note: "Rand's issue is exactly being extreme!"
+  * Extract nodes:
+    - "Ayn Rand" (entity, Remember level)
+    - "Absolute individual rights" (concept, Remember level)
+    - "Extremism as philosophical weakness" (user's insight, Evaluate level IF the critique is valid, Remember level if unfounded)
+    - Plus any other relevant concepts from the highlighted text
+
 For each entity or concept in the text, create an individual node with:
 - Name: Concise identifier for the entity (MUST be noun/noun phrase, not contain verbs like 'versus', 'between', 'and' unless it's a universal archetype)
 - Type: Category (see types below)

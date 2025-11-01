@@ -30,16 +30,43 @@ class NodeDeduplicator:
         self.neo4j_manager = neo4j_manager
         self.similarity_threshold = similarity_threshold
 
+    def _get_merge_threshold(
+        self,
+        new_discipline: Optional[str],
+        existing_discipline: Optional[str]
+    ) -> float:
+        """
+        Determine merge threshold based on discipline compatibility.
+
+        Args:
+            new_discipline: Discipline of the new node
+            existing_discipline: Discipline of the existing node
+
+        Returns:
+            Similarity threshold to use for merge decision
+        """
+        # Same discipline or both missing discipline = default behavior
+        if not new_discipline or not existing_discipline:
+            return self.similarity_threshold  # 0.85 default
+
+        if new_discipline == existing_discipline:
+            return self.similarity_threshold  # 0.85 - confident merge within same domain
+
+        # Different disciplines = very conservative
+        return 0.95  # Require very high similarity to merge across disciplines
+
     async def find_similar_node(
         self,
         node_name: str,
         node_type: Optional[str],
         user_id: str,
         limit: int = 5,
-        embedding: Optional[List[float]] = None
+        embedding: Optional[List[float]] = None,
+        discipline: Optional[str] = None,
+        book_id: Optional[int] = None
     ) -> Optional[Dict[str, Any]]:
         """
-        Find the most similar existing node using vector search.
+        Find the most similar existing node using vector search with context-aware thresholds.
 
         Args:
             node_name: Name of the node to check
@@ -47,6 +74,8 @@ class NodeDeduplicator:
             user_id: User ID
             limit: Max number of candidates to check
             embedding: Optional pre-computed embedding (if not provided, will generate)
+            discipline: Discipline/domain of the new node (for cross-discipline validation)
+            book_id: Book ID to prioritize same-book matches
 
         Returns:
             Dict with similar node info if found, None otherwise:
@@ -65,7 +94,43 @@ class NodeDeduplicator:
                 return None
             embedding = embeddings[0]
 
-        # Search for similar nodes using vector index
+        # PHASE 1: If book_id provided, search within same book first (lower threshold)
+        if book_id:
+            try:
+                same_book_results = await self.neo4j_manager.query_text_similarity(
+                    embedding,
+                    user_id,
+                    limit=limit,
+                    book_id=book_id
+                )
+
+                for result in same_book_results:
+                    score = result.get("score", 0.0)
+
+                    # Lower threshold for same-book matches (0.75)
+                    if score >= 0.75:
+                        node_data = await self.neo4j_manager.get_node_data(result["nodeName"], user_id)
+
+                        # Type filter if provided
+                        if node_type and node_data.get("type") != node_type:
+                            logger.debug(f"Skipping {result['nodeName']} - different type")
+                            continue
+
+                        logger.info(
+                            f"Found similar node in same book: '{node_name}' ~= '{result['nodeName']}' "
+                            f"(score: {score:.3f}, book_id: {book_id})"
+                        )
+
+                        return {
+                            "name": result["nodeName"],
+                            "type": node_data.get("type"),
+                            "score": score,
+                            "id": result["nodeId"]
+                        }
+            except Exception as e:
+                logger.debug(f"Same-book search failed, falling back to global search: {e}")
+
+        # PHASE 2: Global search with discipline-aware threshold
         try:
             results = await self.neo4j_manager.query_text_similarity(
                 embedding,
@@ -76,23 +141,29 @@ class NodeDeduplicator:
             # Filter by similarity threshold and optionally by type
             for result in results:
                 score = result.get("score", 0.0)
+                node_data = await self.neo4j_manager.get_node_data(result["nodeName"], user_id)
 
-                if score >= self.similarity_threshold:
-                    # Optionally filter by same type
-                    # Get node details to check type
-                    node_data = await self.neo4j_manager.get_node_data(result["nodeName"], user_id)
+                # Get discipline-aware threshold
+                existing_discipline = node_data.get("properties", {}).get("discipline")
+                required_threshold = self._get_merge_threshold(discipline, existing_discipline)
 
-                    # Consider it a match if:
-                    # 1. High similarity score
-                    # 2. Same type (optional - you might want cross-type dedup)
+                if score >= required_threshold:
+                    # Type filter if provided
                     if node_type and node_data.get("type") != node_type:
                         logger.debug(f"Skipping {result['nodeName']} - different type ({node_data.get('type')} vs {node_type})")
                         continue
 
-                    logger.info(
-                        f"Found similar node: '{node_name}' ~= '{result['nodeName']}' "
-                        f"(score: {score:.3f})"
-                    )
+                    # Log discipline info if cross-discipline merge
+                    if discipline and existing_discipline and discipline != existing_discipline:
+                        logger.info(
+                            f"Cross-discipline merge: '{node_name}' ({discipline}) ~= '{result['nodeName']}' ({existing_discipline}) "
+                            f"(score: {score:.3f}, threshold: {required_threshold:.2f})"
+                        )
+                    else:
+                        logger.info(
+                            f"Found similar node: '{node_name}' ~= '{result['nodeName']}' "
+                            f"(score: {score:.3f})"
+                        )
 
                     return {
                         "name": result["nodeName"],
@@ -100,6 +171,12 @@ class NodeDeduplicator:
                         "score": score,
                         "id": result["nodeId"]
                     }
+                elif discipline and existing_discipline and discipline != existing_discipline:
+                    # Log when cross-discipline match rejected
+                    logger.debug(
+                        f"Skipping cross-discipline merge: '{node_name}' ({discipline}) vs '{result['nodeName']}' ({existing_discipline}) "
+                        f"(score: {score:.3f} < threshold: {required_threshold:.2f})"
+                    )
 
             return None
 
