@@ -19,6 +19,8 @@ class BloomLevelUpdate(BaseModel):
     source: Optional[str] = Field(None, description="What triggered the update (e.g., 'highlight_id:123', 'writing_id:456')")
 
 class Node(BaseModel):
+    model_config = {"extra": "ignore"}  # Ignore extra fields
+
     name: str = Field(..., description="The node content - can be a simple label (e.g., 'Techno Music') or a narrative fragment (e.g., 'Deeply moved by classical music in empty spaces')")
     type: str = Field(..., description="The type/category of the node (e.g., 'Identity', 'Belief', 'Preference', 'Goal', 'Event', 'Relationship', etc.)")
     chunk_ids: Optional[List[str]] = Field(default_factory=list, description="Array of chunk IDs linking this node to multiple source sections")

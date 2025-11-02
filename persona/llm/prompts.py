@@ -256,30 +256,43 @@ INCLUDE exactly these fields per node:
   * 0.6-0.7 = Reasonable inference from available information
   * 0.4-0.5 = Weak signal or ambiguous data
   * Below 0.4 = Too speculative, avoid creating node
-- book_id: OPTIONAL - ONLY include if the node is extracted from a specific book. Use the book's unique id.  
-- highlight_id: OPTIONAL - ONLY include if the node is linked to a specific user highlight. Use the highlight's unique id.  
-- writing_id: OPTIONAL - ONLY include if the node is linked to a specific user writing project. Use the writing project's unique id.
+- source_index: REQUIRED for batch processing, OMIT for single-source input. Indicates which source(s) the node came from.
+  * When input contains multiple sources formatted as "Source [0]:", "Source [1]:", etc., include this field
+  * Can be single integer (e.g., 0) or array for cross-source concepts (e.g., [0, 2])
+  * Valid range: 0 to N-1 where N is the number of sources
+  * Example: If Source [0] contains "concept X" and Source [1] contains "concept Y":
+    - Node "concept X" → source_index: 0
+    - Node "concept Y" → source_index: 1
+    - Node spanning both → source_index: [0, 1]
+- book_id: OPTIONAL - Array of book IDs (e.g., [27]). ONLY include if explicitly provided in source metadata.
+- highlight_id: OPTIONAL - Array of highlight IDs (e.g., [456, 789]). ONLY include if explicitly provided in source metadata.
+- writing_id: OPTIONAL - Array of writing IDs (e.g., [789]). ONLY include if explicitly provided in source metadata.
+  * NOTE: For batch processing, source_index will be used to map nodes to their source metadata. Do NOT manually extract book_id/highlight_id/writing_id from batch metadata.
 
 What to Extract - CREATE SEPARATE NODES FOR EACH ENTITY:
 
-⚠️ CONSERVATIVE EXTRACTION: Focus on quality over quantity
-- Extract 3-5 core, reusable concepts rather than exhaustively listing every detail
-- Each node should be meaningful enough to connect to other sources and contexts
-- Prefer creating nodes that will have multiple relationships over isolated facts
+⚠️ CONSERVATIVE EXTRACTION: Quality over quantity
+- Extract 3-5 well-connected, reusable concepts rather than 10+ disconnected ones
+- Each node should connect across contexts and sources
+- Prioritize concepts that will have multiple relationships
 
-⚠️ User Notes and Comments
-When the input contains user-written notes/comments on highlights (e.g., "Note: Rand's issue is exactly being extreme!"):
-- Extract the user's insight/reaction as a node when it represents a meaningful concept or evaluation
-- User notes should be extracted IN ADDITION TO concepts from the highlighted text, not instead of them
-- Apply normal Bloom level validation rules - user notes don't automatically mean higher levels; validate correctness
-- Example:
-  * Highlighted text: "Ayn Rand believed in absolute individual rights"
-  * User note: "Rand's issue is exactly being extreme!"
-  * Extract nodes:
-    - "Ayn Rand" (entity, Remember level)
-    - "Absolute individual rights" (concept, Remember level)
-    - "Extremism as philosophical weakness" (user's insight, Evaluate level IF the critique is valid, Remember level if unfounded)
-    - Plus any other relevant concepts from the highlighted text
+⚠️ MANDATORY NODE EXTRACTION OF USER NOTES/COMMENTS: Always extract user insights - 1 node per highlight, 1 node per note
+- User notes are AS IMPORTANT as highlighted text - extract both as separate nodes
+- Apply same entity IDs (book_id, highlight_id) to both highlight concepts and user notes
+- Validate correctness before assigning higher Bloom levels
+- For reading progress updates: ALWAYS extract as "ReadingProgress" type node with page/chapter info
+- User notes should have type "UserNote", "PersonalReflection", or "Insight" depending on content
+
+⚠️ CRITICAL: PERSON NODE EXTRACTION - HIGHEST PRIORITY:
+When you see ANY reference to a person (author, philosopher, scientist, historical figure):
+1. EXTRACT A PERSON NODE using their FULL NAME (e.g., "Ayn Rand", "Albert Einstein", "Karl Marx")
+2. Use node type "Person" (NOT Author/Philosopher/Scientist)
+3. If only a partial name appears (e.g., "Rand", "Einstein"), infer the full name from context or existing graph
+4. Person nodes are MANDATORY - extract even if the person is only mentioned briefly
+5. Examples:
+   - "Rand's philosophy" → Extract node: "Ayn Rand" (type: Person)
+   - "According to Marx" → Extract node: "Karl Marx" (type: Person)
+   - "Einstein's theory" → Extract node: "Albert Einstein" (type: Person)
 
 For each entity or concept in the text, create an individual node with:
 - Name: Concise identifier for the entity (MUST be noun/noun phrase, not contain verbs like 'versus', 'between', 'and' unless it's a universal archetype)
@@ -290,7 +303,7 @@ FOR BOOK/ARTICLE CONTENT - Extract ALL entities as individual nodes:
 
 A. **Source Metadata Nodes** (if content is from a book/article):
    - Book node: "The Count of Monte Cristo" (type: "Book", discipline: "Literature")
-   - Author node: "Alexandre Dumas" (type: "Author", discipline: "Literature")
+   - Person node: "Alexandre Dumas" (type: "Person", discipline: "Literature", properties: {"roles": ["Author"]})
    - Genre nodes: "Adventure", "Historical Fiction" (type: "Genre", discipline: "Literature")
    - Publication year can be stored in properties: {"publication_year": "1844"}
 
@@ -463,14 +476,12 @@ IMPORTANT NOTES:
 2. chunk_ids in examples above (["550e8400-e29b-41d4-a716-446655440000"]) is a VALID UUID array - notice the 8-4-4-4-12 hexadecimal pattern with hyphens
 3. If you receive chunk_ids values like ["80075"], ["12345"], or any plain numbers, these are INVALID - DO NOT include chunk_ids field for those nodes
 4. Always verify ALL values in chunk_ids array match UUID pattern before including it
-5. Entity ID fields (book_id, highlight_id, writing_id):
-   - These are OPTIONAL integer arrays that link nodes to source entities
-   - book_id: Array of book IDs the node is derived from (e.g., [27, 45])
-   - highlight_id: Array of highlight IDs the node is derived from (e.g., [123, 456])
-   - writing_id: Array of writing IDs the node is derived from (e.g., [789])
-   - Empty arrays [] are acceptable when no entity IDs are available
-   - A node can have multiple entity IDs if derived from multiple sources
-   - These help trace nodes back to their original source entities
+5. Entity ID fields and source tracking:
+   - source_index: For batch processing, use this to indicate which source(s) (0, 1, 2...) the node came from
+   - book_id, highlight_id, writing_id: OPTIONAL integer arrays from source metadata (e.g., [27], [456])
+   - For batch processing: Include source_index, metadata will be mapped automatically
+   - For single source: Include entity IDs directly if provided in metadata
+   - Empty arrays [] acceptable when no IDs available
 
 Example Response Format for USER DATA (NOTE: No chunk_ids for personal data):
 {
@@ -582,6 +593,17 @@ Guidelines for Creating Relationships:
       - ANNOTATES / COMMENTS_ON: Commentary or reflection on a concept
       - LEARNED_FROM: Knowledge source relationship
       - REINFORCES: Strengthens or supports existing knowledge
+      - READING_AT: Reading progress node connected to book/chapter
+      - ENCOUNTERED_IN: Concept/idea encountered while reading specific section
+
+   I. Person & Attribution Relationships:
+      - CREATED_BY / AUTHORED_BY: Work created by person
+      - ATTRIBUTED_TO: Idea or concept attributed to person (for possessive references like "Rand's philosophy")
+      - ADVOCATED_BY: Person advocates or supports this concept
+      - CRITICIZED_BY: Person critiques or opposes this concept
+      - REFERS_TO: Partial/possessive reference points to full person name
+      - IS_ALSO_KNOWN_AS: Aliases or alternate names
+      - HAS_ROLE: Person has a specific role (Author, Philosopher, etc.)
 
 2. Principles for Relationship Creation:
    - Only create relationships that are strongly justified
@@ -589,6 +611,31 @@ Guidelines for Creating Relationships:
    - Prefer direct connections over tenuous ones
    - Consider temporal and causal flows
    - Look for relationships that help understand the user's journey
+
+   SPECIAL CASES - ALWAYS CREATE THESE:
+   a) Reading Progress → Highlights/Notes:
+      - When a ReadingProgress node exists, connect it with READING_AT to the book
+      - Connect any concepts from same page/chapter with ENCOUNTERED_IN to ReadingProgress
+      - Example: "Page 47 of Atlas Shrugged" READING_AT "Atlas Shrugged"
+      - Example: "Objectivism concept" ENCOUNTERED_IN "Page 47 of Atlas Shrugged"
+
+   b) Person Attribution - ALWAYS CREATE THESE PATTERNS:
+      - When you see "Rand's philosophy" or possessive forms:
+        * Extract Person node: "Ayn Rand"
+        * Extract concept node: "Rand's philosophy" or "Objectivism"
+        * Relationship: "Rand's philosophy" ATTRIBUTED_TO "Ayn Rand"
+        * Relationship: "Objectivism" CREATED_BY "Ayn Rand"
+      - When you see "according to Rand" or attribution phrases:
+        * Extract Person node: "Ayn Rand"
+        * Extract concept node from what they said
+        * Relationship: concept ATTRIBUTED_TO "Ayn Rand"
+      - CRITICAL: The Person node with FULL NAME must ALWAYS be created when any person is mentioned
+
+   c) Connect to Existing Person Nodes:
+      - BEFORE creating a new Person node, check if that person already exists in the graph context
+      - If "Ayn Rand" exists in the graph, use that exact name for relationships
+      - If you see duplicate person nodes (e.g., "Ayn Rand" as Author and as Philosopher), treat them as the SAME person
+      - Always prefer connecting to an existing Person node over creating a new one
 
 3. When to NOT Create Relationships:
    - When connections feel forced or superficial

@@ -24,9 +24,9 @@ class OpenAIClient(BaseLLMClient):
         self.sync_client = openai.OpenAI(api_key=api_key)
     
     async def chat(
-        self, 
-        messages: List[ChatMessage], 
-        temperature: float = 0.7,
+        self,
+        messages: List[ChatMessage],
+        temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         response_format: Optional[Dict[str, str]] = None,
         **kwargs
@@ -38,20 +38,23 @@ class OpenAIClient(BaseLLMClient):
                 {"role": msg.role, "content": msg.content}
                 for msg in messages
             ]
-            
+
             # Prepare request parameters
             request_params = {
                 "model": self.chat_model,
                 "messages": openai_messages,
-                "temperature": temperature,
             }
-            
+
+            # Only include temperature if explicitly provided (for models that support it)
+            if temperature is not None:
+                request_params["temperature"] = temperature
+
             if max_tokens:
                 request_params["max_tokens"] = max_tokens
-            
+
             if response_format:
                 request_params["response_format"] = response_format
-            
+
             # Add any additional parameters
             request_params.update(kwargs)
             

@@ -273,6 +273,15 @@ class Neo4jConnectionManager:
                         query += f", n.{id_field} = ${id_field}"
                         params[id_field] = ids
 
+                    # DEBUG: Log entity IDs for specific node
+                    if node['name'] == "Middle of the roaders":
+                        logger.info(
+                            f"DEBUG: Database transaction for '{node['name']}' - "
+                            f"book_id param: {params.get('book_id')}, "
+                            f"highlight_id param: {params.get('highlight_id')}, "
+                            f"writing_id param: {params.get('writing_id')}"
+                        )
+
                     await tx.run(query, params) # type: ignore
                     logger.debug(f"Transaction: Created/updated node {node['name']}")
                 # Step 2: Create relationships
@@ -402,6 +411,14 @@ class Neo4jConnectionManager:
                     if chunk_ids:
                         query = query.rstrip() + ", n.chunk_ids = $chunk_ids\n                    "
                         params["chunk_ids"] = chunk_ids
+
+                    # Preserve entity IDs if present (book_id, highlight_id, writing_id)
+                    # This ensures entity IDs set in Step 1 aren't lost during Bloom updates
+                    for id_field in ['book_id', 'highlight_id', 'writing_id']:
+                        entity_ids = bloom_data.get(id_field)
+                        if entity_ids:
+                            query = query.rstrip() + f", n.{id_field} = ${id_field}\n                    "
+                            params[id_field] = entity_ids
 
                     await tx.run(query, params)
                     logger.debug(f"Transaction: Updated properties for {bloom_data['node_name']}")

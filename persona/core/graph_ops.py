@@ -62,6 +62,7 @@ class GraphOps:
         nodes_to_create = []
         node_mapping = {}  # Maps new_node_name -> existing_node_name for duplicates
         merged_count = 0
+        entity_ids_to_append = {}  # Track entity IDs to append to existing nodes
 
         for node in nodes:
             # Check if a similar node already exists
@@ -77,15 +78,49 @@ class GraphOps:
 
             if similar:
                 # Instead of skipping, map this node to the existing similar node
-                node_mapping[node.name] = similar["name"]
+                existing_node_name = similar["name"]
+                node_mapping[node.name] = existing_node_name
                 merged_count += 1
                 logger.info(
-                    f"Merging node '{node.name}' into existing similar node '{similar['name']}' "
+                    f"Merging node '{node.name}' into existing similar node '{existing_node_name}' "
                     f"(score: {similar['score']:.3f})"
                 )
+
+                # Collect entity IDs to append to the existing node
+                if existing_node_name not in entity_ids_to_append:
+                    entity_ids_to_append[existing_node_name] = {
+                        'book_ids': [],
+                        'highlight_ids': [],
+                        'writing_ids': []
+                    }
+
+                if hasattr(node, 'book_id') and node.book_id:
+                    entity_ids_to_append[existing_node_name]['book_ids'].extend(node.book_id)
+                if hasattr(node, 'highlight_id') and node.highlight_id:
+                    entity_ids_to_append[existing_node_name]['highlight_ids'].extend(node.highlight_id)
+                if hasattr(node, 'writing_id') and node.writing_id:
+                    entity_ids_to_append[existing_node_name]['writing_ids'].extend(node.writing_id)
+
+                # Also append chunk_ids if present
+                if hasattr(node, 'chunk_ids') and node.chunk_ids:
+                    await self.neo4j_manager.append_chunk_ids_to_node(
+                        existing_node_name, node.chunk_ids, user_id
+                    )
+
                 continue
 
             nodes_to_create.append(node)
+
+        # Append entity IDs to existing nodes that had duplicates merged into them
+        for existing_node_name, entity_ids in entity_ids_to_append.items():
+            if entity_ids['book_ids'] or entity_ids['highlight_ids'] or entity_ids['writing_ids']:
+                await self.neo4j_manager.append_entity_ids_to_node(
+                    node_name=existing_node_name,
+                    book_ids=entity_ids['book_ids'],
+                    highlight_ids=entity_ids['highlight_ids'],
+                    writing_ids=entity_ids['writing_ids'],
+                    user_id=user_id
+                )
 
         if merged_count:
             logger.info(f"Merged {merged_count} nodes into existing similar nodes")
@@ -434,6 +469,15 @@ class GraphOps:
                 "writing_id": node.writing_id if node.writing_id else []
             }
 
+            # DEBUG: Log entity IDs for specific node
+            if node.name == "Middle of the roaders":
+                logger.info(
+                    f"DEBUG: Creating node '{node.name}' with entity IDs - "
+                    f"book_id: {node_dict['book_id']}, "
+                    f"highlight_id: {node_dict['highlight_id']}, "
+                    f"writing_id: {node_dict['writing_id']}"
+                )
+
             # Add temporal fields if present
             if hasattr(node, 'created_at') and node.created_at:
                 node_dict["created_at"] = node.created_at
@@ -519,11 +563,20 @@ class GraphOps:
                     "properties": current_props
                 }
 
-                # Add entity IDs if this node had entities appended
+                # Add entity IDs from appended entities (for merged nodes)
                 if node_name in entity_ids_to_append:
                     bloom_update['book_id'] = entity_ids_to_append[node_name].get('book_ids', [])
                     bloom_update['highlight_id'] = entity_ids_to_append[node_name].get('highlight_ids', [])
                     bloom_update['writing_id'] = entity_ids_to_append[node_name].get('writing_ids', [])
+                # Add entity IDs from new nodes being created
+                elif node_name in new_nodes_map:
+                    # Find the original node object to get entity IDs
+                    for node in nodes_to_create:
+                        if node.name == node_name:
+                            bloom_update['book_id'] = node.book_id if node.book_id else []
+                            bloom_update['highlight_id'] = node.highlight_id if node.highlight_id else []
+                            bloom_update['writing_id'] = node.writing_id if node.writing_id else []
+                            break
 
                 bloom_updates.append(bloom_update)
             except Exception as e:

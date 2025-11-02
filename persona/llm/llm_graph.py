@@ -5,14 +5,18 @@ from persona.models.schema import EntityExtractionResponse, NodesAndRelationship
 from pydantic import BaseModel, Field, field_validator, model_validator
 from persona.utils.instructions_reader import INSTRUCTIONS
 from server.logging_config import get_logger
+from server.config import config
 from .client_factory import get_chat_client
 from .providers.base import ChatMessage
 
 logger = get_logger(__name__)
 
 class Node(BaseModel):
+    model_config = {"extra": "ignore"}  # Ignore extra fields from LLM responses
+
     name: str = Field(..., description="The node content - can be a simple label (e.g., 'Techno Music') or a narrative fragment (e.g., 'Deeply moved by classical music in empty spaces')")
     type: str = Field(..., description="The type/category of the node (e.g., 'Identity', 'Belief', 'Preference', 'Goal', 'Event', 'Relationship', etc.)")
+    source_index: Optional[int | List[int]] = Field(None, description="Index of source(s) this node came from in batch processing (e.g., 0, 1, or [0, 2])")
     chunk_ids: Optional[List[str]] = Field(default_factory=list, description="Array of chunk IDs linking this node to multiple source sections")
     book_id: Optional[List[int]] = Field(default_factory=list, description="Array of book IDs associated with this node")
     highlight_id: Optional[List[int]] = Field(default_factory=list, description="Array of highlight IDs associated with this node")
@@ -66,14 +70,16 @@ async def get_nodes(text: str, graph_context: str) -> List[Node]:
             ChatMessage(role="system", content=combined_instructions),
             ChatMessage(role="user", content=text)
         ]
-        
+
         client = get_chat_client()
-        response = await client.chat(
-            messages=messages,
-            temperature=0.5,
-            response_format={"type": "json_object"}
-        )
-        
+
+        # Build kwargs, only include temperature if configured
+        kwargs = {"messages": messages, "response_format": {"type": "json_object"}}
+        if config.MACHINE_LEARNING.LLM_TEMPERATURE is not None:
+            kwargs["temperature"] = config.MACHINE_LEARNING.LLM_TEMPERATURE
+
+        response = await client.chat(**kwargs)
+
         # Parse JSON response
         json_data = json.loads(response.content)
         
@@ -118,13 +124,15 @@ async def get_relationships(nodes: List[Node], graph_context: str) -> Tuple[List
             ChatMessage(role="system", content=combined_instructions),
             ChatMessage(role="user", content=f"Nodes:\n{nodes_str}\n\nExisting Graph Context:\n{graph_context}")
         ]
-        
+
         client = get_chat_client()
-        response = await client.chat(
-            messages=messages,
-            temperature=0.7,
-            response_format={"type": "json_object"}
-        )
+
+        # Build kwargs, only include temperature if configured
+        kwargs = {"messages": messages, "response_format": {"type": "json_object"}}
+        if config.MACHINE_LEARNING.LLM_TEMPERATURE is not None:
+            kwargs["temperature"] = config.MACHINE_LEARNING.LLM_TEMPERATURE
+
+        response = await client.chat(**kwargs)
         
         # Parse JSON response
         json_data = json.loads(response.content)
@@ -174,9 +182,15 @@ async def generate_response_with_context(query: str, context: str) -> str:
             ChatMessage(role="system", content="You are a helpful assistant that answers queries about a user based on the provided context from their graph."),
             ChatMessage(role="user", content=prompt)
         ]
-        
+
         client = get_chat_client()
-        response = await client.chat(messages=messages, temperature=0.7)
+
+        # Build kwargs, only include temperature if configured
+        kwargs = {"messages": messages}
+        if config.MACHINE_LEARNING.LLM_TEMPERATURE is not None:
+            kwargs["temperature"] = config.MACHINE_LEARNING.LLM_TEMPERATURE
+
+        response = await client.chat(**kwargs)
         
         return response.content
         
@@ -193,13 +207,15 @@ async def detect_communities(subgraphs_text: str) -> CommunityStructure:
             ChatMessage(role="system", content=GENERATE_COMMUNITIES),
             ChatMessage(role="user", content=subgraphs_text)
         ]
-        
+
         client = get_chat_client()
-        response = await client.chat(
-            messages=messages,
-            temperature=0.7,
-            response_format={"type": "json_object"}
-        )
+
+        # Build kwargs, only include temperature if configured
+        kwargs = {"messages": messages, "response_format": {"type": "json_object"}}
+        if config.MACHINE_LEARNING.LLM_TEMPERATURE is not None:
+            kwargs["temperature"] = config.MACHINE_LEARNING.LLM_TEMPERATURE
+
+        response = await client.chat(**kwargs)
         
         # Parse JSON response
         json_data = json.loads(response.content)
@@ -255,10 +271,13 @@ async def generate_structured_insights(ask_request: AskRequest, context: str) ->
         ]
 
         client = get_chat_client()
-        response = await client.chat(
-            messages=messages,
-            response_format={"type": "json_object"}
-        )
+
+        # Build kwargs, only include temperature if configured
+        kwargs = {"messages": messages, "response_format": {"type": "json_object"}}
+        if config.MACHINE_LEARNING.LLM_TEMPERATURE is not None:
+            kwargs["temperature"] = config.MACHINE_LEARNING.LLM_TEMPERATURE
+
+        response = await client.chat(**kwargs)
 
         return json.loads(response.content)
 

@@ -32,7 +32,13 @@ class ML(BaseModel):
     # LLM Service Configuration - REQUIRED
     LLM_SERVICE: str = Field(environ.get("LLM_SERVICE", ""), description="LLM service in format 'provider/model' (REQUIRED)")
     EMBEDDING_SERVICE: str = Field(environ.get("EMBEDDING_SERVICE", ""), description="Embedding service in format 'provider/model' (REQUIRED)")
-    
+
+    # Temperature configuration (set to None for models that don't support it like o1-mini)
+    LLM_TEMPERATURE: Optional[float] = Field(
+        float(environ.get("LLM_TEMPERATURE")) if environ.get("LLM_TEMPERATURE") else None,
+        description="LLM temperature (0.0-2.0). Set to None for models like o1-mini that don't support it."
+    )
+
     # OpenAI Configuration
     OPENAI_API_KEY: str = Field(environ.get("OPENAI_API_KEY", ""), description="OpenAI API key")
     OPENAI_CHAT_MODEL: str = Field(environ.get("OPENAI_CHAT_MODEL", ""), description="OpenAI chat model")

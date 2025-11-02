@@ -32,58 +32,60 @@ class GraphConstructor:
             raise RuntimeError("GraphConstructor must be used as an async context manager")
         await self.graph_ops.clean_graph()
 
-    async def ingest_unstructured_data_to_graph(self, data: UnstructuredData):
+    async def _generate_all_relationships(
+        self,
+        nodes: List[Node],
+        text: str,
+        book_ids: set[int]
+    ) -> List[Relationship]:
         """
-        Ingest unstructured data into the graph.
-        This process now includes:
-        1. Extracting meaningful, self-contained nodes from the content
-        2. Finding strong, justified relationships between new nodes
-        3. Selectively connecting with existing nodes only when truly relevant
+        Generate all types of relationships for the given nodes.
+
+        Args:
+            nodes: List of nodes to generate relationships for
+            text: Original text for context retrieval
+            book_ids: Set of book IDs for book-scoped relationships
+
+        Returns:
+            List of all relationships
         """
-        if self.graph_ops is None or self.graph_context_retriever is None:
-            raise RuntimeError("GraphConstructor must be used as an async context manager")
-        text = self.preprocess_data(data)
-        
-        # Extract new nodes from the content (pass metadata for entity IDs)
-        new_nodes = await self.extract_nodes(text, data.metadata or {})
-        if not new_nodes:
-            logger.info("No new nodes generated from the unstructured data.")
-            return
+        relationships = []
 
         # Get existing graph context
         existing_context = await self.graph_context_retriever.get_rich_context(text, self.user_id)
-        
-        # Generate relationships - now more selective
-        relationships = []
-        
+
         # Phase 1: Core relationships between new nodes
-        new_node_relationships = await self.generate_relationships(new_nodes)
+        new_node_relationships = await self.generate_relationships(nodes)
         relationships.extend(new_node_relationships)
-        
-        # Phase 2: Only connect with existing nodes if there's strong relevance
-        if existing_context and len(new_nodes) > 0:
-            mixed_relationships = await self.generate_cross_relationships(new_nodes, existing_context)
-            # Filter for stronger relationships (we might want to add a confidence score)
+
+        # Phase 2: Connect with existing nodes
+        if existing_context and len(nodes) > 0:
+            mixed_relationships = await self.generate_cross_relationships(nodes, existing_context)
             relationships.extend(mixed_relationships)
 
-        # Phase 3: Book-scoped relationships (if this data is from a book)
-        if data.metadata and 'book_id' in data.metadata:
-            try:
-                book_id = int(data.metadata['book_id'])
-                book_relationships = await self.generate_book_scoped_relationships(new_nodes, book_id)
-                relationships.extend(book_relationships)
-                logger.info(f"Created {len(book_relationships)} book-scoped relationships for book {book_id}")
-            except (ValueError, KeyError) as e:
-                logger.debug(f"Could not extract book_id for book-scoped relationships: {e}")
+        # Phase 3: Book-scoped relationships
+        for book_id in book_ids:
+            book_relationships = await self.generate_book_scoped_relationships(nodes, book_id)
+            relationships.extend(book_relationships)
+            logger.info(f"Created {len(book_relationships)} book-scoped relationships for book {book_id}")
 
-        # Create the graph update - nodes with type information and PKG properties
-        # Generate embeddings for each node
-        node_texts = [node.name for node in new_nodes]
-        embeddings = generate_embeddings(node_texts)
+        return relationships
 
-        # Build properties dict from PKG fields
-        nodes = []
-        for node, embedding in zip(new_nodes, embeddings):
+    def _nodes_to_node_models(self, nodes: List[Node], embeddings: List[List[float]]) -> List[NodeModel]:
+        """
+        Convert schema Nodes to NodeModels with embeddings.
+
+        Args:
+            nodes: List of schema Node objects
+            embeddings: List of embedding vectors
+
+        Returns:
+            List of NodeModel objects ready for database
+        """
+        from persona.models.schema import NodeModel
+
+        node_models = []
+        for node, embedding in zip(nodes, embeddings):
             properties = {}
             if node.discipline:
                 properties["discipline"] = node.discipline
@@ -92,12 +94,12 @@ class GraphConstructor:
             if node.confidence is not None:
                 properties["confidence"] = node.confidence
 
-            # Convert datetime to ISO string for NodeModel
+            # Convert datetime to ISO string
             created_at_str = None
             if hasattr(node, 'created_at') and node.created_at:
                 created_at_str = node.created_at.isoformat() if hasattr(node.created_at, 'isoformat') else str(node.created_at)
 
-            # Convert BloomLevelUpdate objects to dicts for NodeModel
+            # Convert BloomLevelUpdate objects to dicts
             bloom_history_dicts = []
             if hasattr(node, 'bloom_history') and node.bloom_history:
                 for update in node.bloom_history:
@@ -107,10 +109,10 @@ class GraphConstructor:
                         "source": update.source
                     })
 
-            nodes.append(NodeModel(
+            node_models.append(NodeModel(
                 name=node.name,
                 type=node.type,
-                chunk_ids=node.chunk_ids if node.chunk_ids else [],  # Always an array
+                chunk_ids=node.chunk_ids if node.chunk_ids else [],
                 book_id=node.book_id if node.book_id else [],
                 highlight_id=node.highlight_id if node.highlight_id else [],
                 writing_id=node.writing_id if node.writing_id else [],
@@ -119,32 +121,199 @@ class GraphConstructor:
                 created_at=created_at_str,
                 bloom_history=bloom_history_dicts
             ))
-        
-        relationships = [RelationshipModel(
+
+        return node_models
+
+    async def _save_graph_update(self, nodes: List[Node], relationships: List[Relationship]):
+        """
+        Generate embeddings and save nodes and relationships to graph.
+
+        Args:
+            nodes: List of schema Node objects
+            relationships: List of Relationship objects
+        """
+        from persona.models.schema import RelationshipModel, NodesAndRelationshipsResponse
+
+        # Generate embeddings
+        node_texts = [node.name for node in nodes]
+        embeddings = generate_embeddings(node_texts)
+
+        # Convert to NodeModels
+        node_models = self._nodes_to_node_models(nodes, embeddings)
+
+        # Convert relationships
+        relationship_models = [RelationshipModel(
             source=rel.source,
             target=rel.target,
             relation=rel.relation
         ) for rel in relationships]
-        
+
         graph_update = NodesAndRelationshipsResponse(
-            nodes=nodes,
-            relationships=relationships
+            nodes=node_models,
+            relationships=relationship_models
         )
-        
-        # Update the graph with transaction support (atomic: nodes + relationships + embeddings + bloom levels)
-        # If any step fails, all changes are rolled back
+
+        # Save to database
         try:
             await self.graph_ops.update_graph_with_bloom_transactional(graph_update, self.user_id)
-            logger.info(f"Successfully ingested {len(nodes)} nodes and {len(relationships)} relationships with bloom levels")
-
-            # NOTE: Layer 2 consolidation DISABLED - it was too slow and buggy
-            # Layer 1 prevention (in add_nodes) is sufficient for preventing duplicates
-            # await self._consolidate_duplicates_inline()
-
+            logger.info(f"Successfully saved {len(node_models)} nodes and {len(relationship_models)} relationships")
         except Exception as e:
-            logger.error(f"Failed to ingest data (transaction rolled back): {e}")
+            logger.error(f"Failed to save graph update (transaction rolled back): {e}")
             raise
-            
+
+    def _llm_node_to_schema_node(self, llm_node, metadata: Dict[str, Any]) -> Node:
+        """
+        Convert LLM node to schema Node with metadata applied.
+
+        Args:
+            llm_node: Node from LLM response
+            metadata: Metadata dict to apply to node
+
+        Returns:
+            Schema Node object
+        """
+        from datetime import datetime
+        from persona.models.schema import BloomLevelUpdate, Node
+
+        # Extract entity IDs from metadata
+        book_ids = [int(metadata['book_id'])] if 'book_id' in metadata else []
+        highlight_ids = [int(metadata['highlight_id'])] if 'highlight_id' in metadata else []
+        writing_ids = [int(metadata['writing_id'])] if 'writing_id' in metadata else []
+
+        # Extract date from metadata
+        annotation_date = None
+        if 'date' in metadata:
+            try:
+                date_value = metadata['date']
+                if isinstance(date_value, str):
+                    annotation_date = datetime.fromisoformat(date_value.replace('Z', '+00:00'))
+                elif isinstance(date_value, datetime):
+                    annotation_date = date_value
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Failed to parse date from metadata: {e}")
+
+        # Create Bloom history
+        current_time = datetime.utcnow()
+        bloom_level = getattr(llm_node, 'bloom_level', '')
+        bloom_history = []
+        if bloom_level:
+            source_info = []
+            if highlight_ids:
+                source_info.append(f"highlight_id:{highlight_ids[0]}")
+            elif book_ids:
+                source_info.append(f"book_id:{book_ids[0]}")
+            source = ', '.join(source_info) if source_info else None
+
+            bloom_history.append(BloomLevelUpdate(
+                level=bloom_level,
+                timestamp=annotation_date or current_time,
+                source=source
+            ))
+
+        return Node(
+            name=llm_node.name,
+            type=llm_node.type,
+            chunk_ids=getattr(llm_node, 'chunk_ids', []),
+            book_id=book_ids,
+            highlight_id=highlight_ids,
+            writing_id=writing_ids,
+            discipline=getattr(llm_node, 'discipline', ''),
+            bloom_level=bloom_level,
+            confidence=getattr(llm_node, 'confidence', 0.0),
+            created_at=annotation_date or current_time,
+            bloom_history=bloom_history
+        )
+
+    async def ingest_batch_unstructured_data_to_graph(self, data_items: List[UnstructuredData]):
+        """
+        Ingest batch of unstructured data using source indexing for accurate metadata mapping.
+
+        Args:
+            data_items: List of UnstructuredData items to ingest
+        """
+        if self.graph_ops is None or self.graph_context_retriever is None:
+            raise RuntimeError("GraphConstructor must be used as an async context manager")
+
+        if not data_items:
+            logger.info("No data items provided for batch ingestion")
+            return
+
+        logger.info(f"Starting batch ingestion of {len(data_items)} items")
+
+        # Format batch with source indices
+        formatted_text, metadata_mapping = self.preprocess_batch_data(data_items)
+
+        # Extract nodes (single LLM call)
+        graph_context = await self.get_relevant_graph_context(user_id=self.user_id, nodes=[])
+        llm_nodes = await get_nodes(formatted_text, graph_context)
+
+        if not llm_nodes:
+            logger.info("No nodes extracted from batch data")
+            return
+
+        # Map source_index to metadata and convert to schema Nodes
+        schema_nodes = []
+        for llm_node in llm_nodes:
+            source_idx = getattr(llm_node, 'source_index', None)
+
+            # Get metadata for this source
+            if source_idx is not None and isinstance(source_idx, int) and source_idx in metadata_mapping:
+                metadata = metadata_mapping[source_idx]
+            elif source_idx is None:
+                logger.warning(f"Node '{llm_node.name}' missing source_index, using first source")
+                metadata = metadata_mapping[0] if 0 in metadata_mapping else {}
+            else:
+                logger.error(f"Node '{llm_node.name}' has invalid source_index {source_idx}, skipping")
+                continue
+
+            schema_nodes.append(self._llm_node_to_schema_node(llm_node, metadata))
+
+        logger.info(f"Extracted {len(schema_nodes)} nodes from batch")
+
+        # Collect book IDs for book-scoped relationships
+        book_ids = set()
+        for item in data_items:
+            if item.metadata and 'book_id' in item.metadata:
+                try:
+                    book_ids.add(int(item.metadata['book_id']))
+                except (ValueError, TypeError):
+                    pass
+
+        # Generate relationships
+        relationships = await self._generate_all_relationships(schema_nodes, formatted_text, book_ids)
+
+        # Save to database
+        await self._save_graph_update(schema_nodes, relationships)
+
+    async def ingest_unstructured_data_to_graph(self, data: UnstructuredData):
+        """
+        Ingest single unstructured data item into the graph.
+        """
+        if self.graph_ops is None or self.graph_context_retriever is None:
+            raise RuntimeError("GraphConstructor must be used as an async context manager")
+
+        text = self.preprocess_data(data)
+
+        # Extract nodes from content
+        new_nodes = await self.extract_nodes(text, data.metadata or {})
+        if not new_nodes:
+            logger.info("No nodes generated from unstructured data")
+            return
+
+        # Collect book IDs for book-scoped relationships
+        book_ids = set()
+        if data.metadata and 'book_id' in data.metadata:
+            try:
+                book_ids.add(int(data.metadata['book_id']))
+            except (ValueError, TypeError):
+                pass
+
+        # Generate relationships
+        relationships = await self._generate_all_relationships(new_nodes, text, book_ids)
+
+        # Save to database
+        await self._save_graph_update(new_nodes, relationships)
+
     def preprocess_data(self, data: UnstructuredData) -> str:
         """
         Preprocess the data, combine relevant fields into a single string.
@@ -154,11 +323,47 @@ class GraphConstructor:
             preprocessed += "\n".join([f"{k}: {v}" for k, v in data.metadata.items()])
         return preprocessed
 
+    def preprocess_batch_data(self, data_items: List[UnstructuredData]) -> Tuple[str, Dict[int, Dict[str, Any]]]:
+        """
+        Preprocess batch data with indexed source formatting.
+
+        Args:
+            data_items: List of UnstructuredData items to process
+
+        Returns:
+            Tuple of (formatted_text, metadata_mapping)
+            - formatted_text: Text with indexed sources "Source [0]:", "Source [1]:", etc.
+            - metadata_mapping: Dict mapping source index to original metadata
+        """
+        text_parts = []
+        metadata_mapping = {}
+
+        for idx, data in enumerate(data_items):
+            # Format source with index
+            source_text = f"Source [{idx}]:\n"
+            source_text += f"Title: {data.title}\n"
+            source_text += f"Content: {data.content}\n"
+
+            # Include metadata in the text for LLM context (optional)
+            if data.metadata:
+                source_text += "Metadata:\n"
+                for k, v in data.metadata.items():
+                    source_text += f"  {k}: {v}\n"
+
+            text_parts.append(source_text)
+
+            # Store metadata mapping for later
+            metadata_mapping[idx] = data.metadata or {}
+
+        formatted_text = "\n\n".join(text_parts)
+        return formatted_text, metadata_mapping
+
     async def extract_nodes(self, text: str, metadata: Dict[str, str] = {}) -> List[Node]:
         """
         Extract nodes from the unstructured text.
         Entity IDs (book_id, highlight_id, writing_id) and chunk_ids from metadata are applied to all extracted nodes.
         """
+
         graph_context = await self.get_relevant_graph_context(user_id=self.user_id, nodes=[])
         llm_nodes = await get_nodes(text, graph_context)
 
@@ -182,8 +387,8 @@ class GraphConstructor:
         if 'highlight_id' in metadata:
             try:
                 highlight_ids = [int(metadata['highlight_id'])]
-            except (ValueError, TypeError):
-                pass
+            except (ValueError, TypeError) as e:
+                logger.error(f"Failed to convert highlight_id from metadata: {e}")
 
         writing_ids = []
         if 'writing_id' in metadata:
@@ -248,6 +453,116 @@ class GraphConstructor:
             ))
 
         return nodes
+
+    def map_source_indices_to_metadata(
+        self,
+        nodes: List[Node],
+        metadata_mapping: Dict[int, Dict[str, Any]]
+    ) -> Tuple[List[Node], Dict[str, int]]:
+        """
+        Map source_index from LLM response to actual metadata from original sources.
+
+        Args:
+            nodes: List of nodes with source_index from LLM
+            metadata_mapping: Dict mapping source index to original metadata
+
+        Returns:
+            Tuple of (validated_nodes, stats)
+            - validated_nodes: Nodes with metadata applied from source_index mapping
+            - stats: Dict with validation metrics (valid, missing_index, invalid_index)
+        """
+        from datetime import datetime
+
+        validated_nodes = []
+        stats = {"valid": 0, "missing_index": 0, "invalid_index": 0, "cross_source": 0}
+
+        for node in nodes:
+            source_idx = getattr(node, 'source_index', None)
+
+            # Handle missing source_index
+            if source_idx is None:
+                logger.warning(f"Node '{node.name}' missing source_index, assigning to first source")
+                stats["missing_index"] += 1
+                source_idx = 0 if 0 in metadata_mapping else None
+
+                if source_idx is None:
+                    logger.error(f"Node '{node.name}' missing source_index and no sources available, skipping")
+                    continue
+
+            # Handle single source_index
+            if isinstance(source_idx, int):
+                if source_idx not in metadata_mapping:
+                    logger.error(f"Node '{node.name}' has invalid source_index {source_idx}, skipping")
+                    stats["invalid_index"] += 1
+                    continue
+
+                # Apply metadata from source
+                metadata = metadata_mapping[source_idx]
+                node.book_id = [int(metadata['book_id'])] if 'book_id' in metadata else []
+                node.highlight_id = [int(metadata['highlight_id'])] if 'highlight_id' in metadata else []
+                node.writing_id = [int(metadata['writing_id'])] if 'writing_id' in metadata else []
+
+                # Update bloom history source if needed
+                if hasattr(node, 'bloom_history') and node.bloom_history:
+                    for bloom_update in node.bloom_history:
+                        if bloom_update.source is None:
+                            source_info = []
+                            if node.highlight_id:
+                                source_info.append(f"highlight_id:{node.highlight_id[0]}")
+                            elif node.book_id:
+                                source_info.append(f"book_id:{node.book_id[0]}")
+                            bloom_update.source = ', '.join(source_info) if source_info else None
+
+                stats["valid"] += 1
+
+            # Handle multi-source cross-concept (source_index is array)
+            elif isinstance(source_idx, list):
+                book_ids = []
+                highlight_ids = []
+                writing_ids = []
+
+                for idx in source_idx:
+                    if idx not in metadata_mapping:
+                        logger.warning(f"Node '{node.name}' has invalid source_index {idx} in list, skipping this index")
+                        continue
+
+                    metadata = metadata_mapping[idx]
+                    if 'book_id' in metadata:
+                        book_id = int(metadata['book_id'])
+                        if book_id not in book_ids:
+                            book_ids.append(book_id)
+                    if 'highlight_id' in metadata:
+                        highlight_id = int(metadata['highlight_id'])
+                        if highlight_id not in highlight_ids:
+                            highlight_ids.append(highlight_id)
+                    if 'writing_id' in metadata:
+                        writing_id = int(metadata['writing_id'])
+                        if writing_id not in writing_ids:
+                            writing_ids.append(writing_id)
+
+                if not (book_ids or highlight_ids or writing_ids):
+                    logger.error(f"Node '{node.name}' has all invalid source_indices {source_idx}, skipping")
+                    stats["invalid_index"] += 1
+                    continue
+
+                node.book_id = book_ids
+                node.highlight_id = highlight_ids
+                node.writing_id = writing_ids
+                stats["valid"] += 1
+                stats["cross_source"] += 1
+
+            validated_nodes.append(node)
+
+        # Log accuracy metrics
+        total = sum([stats["valid"], stats["missing_index"], stats["invalid_index"]])
+        accuracy = stats["valid"] / total if total > 0 else 0
+        logger.info(
+            f"Source index mapping: valid={stats['valid']}, missing={stats['missing_index']}, "
+            f"invalid={stats['invalid_index']}, cross_source={stats['cross_source']}, "
+            f"accuracy={accuracy:.1%}"
+        )
+
+        return validated_nodes, stats
 
     async def generate_relationships(self, nodes: List[Node], context_description: str = "") -> List[Relationship]:
         """
@@ -315,23 +630,19 @@ class GraphConstructor:
 
         relationships = []
 
-        # Generate embeddings for new nodes if not already present
-        nodes_needing_embeddings = [node for node in new_nodes if not hasattr(node, 'embedding') or not node.embedding]
-        if nodes_needing_embeddings:
-            node_texts = [node.name for node in nodes_needing_embeddings]
-            embeddings = generate_embeddings(node_texts)
-            for node, embedding in zip(nodes_needing_embeddings, embeddings):
-                node.embedding = embedding
+        # Generate embeddings for all new nodes
+        node_texts = [node.name for node in new_nodes]
+        embeddings = generate_embeddings(node_texts)
 
         # For each new node, find related nodes from the same book
-        for node in new_nodes:
-            if not hasattr(node, 'embedding') or not node.embedding:
+        for idx, (node, embedding) in enumerate(zip(new_nodes, embeddings)):
+            if not embedding:
                 continue
 
             try:
                 # Vector search filtered by book_id
                 similar_nodes = await self.graph_ops.neo4j_manager.query_text_similarity(
-                    keyword_embedding=node.embedding,
+                    keyword_embedding=embedding,
                     user_id=self.user_id,
                     book_id=book_id,  # Key: filter to same book only
                     limit=10  # Higher limit since we're pre-filtering by book
