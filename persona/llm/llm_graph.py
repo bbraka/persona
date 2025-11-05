@@ -22,13 +22,12 @@ class Node(BaseModel):
     highlight_id: Optional[List[int]] = Field(default_factory=list, description="Array of highlight IDs associated with this node")
     writing_id: Optional[List[int]] = Field(default_factory=list, description="Array of writing IDs associated with this node")
     discipline: Optional[str] = Field(None, description="Academic/knowledge domain of the node")
-    bloom_level: Optional[str] = Field(None, description="Bloom's taxonomy cognitive level")
     confidence: Optional[float] = Field(None, description="Extraction quality score (0.0-1.0)")
     properties: Dict[str, Any] = Field(default_factory=dict, description="Additional properties of the node")
 
     @model_validator(mode='after')
     def pack_properties(self) -> 'Node':
-        """Pack discipline, bloom_level, and confidence into properties dict.
+        """Pack discipline and confidence into properties dict.
         NOTE: chunk_ids are NOT packed into properties - they remain top-level."""
         # Ensure properties dict is initialized
         if self.properties is None:
@@ -37,8 +36,6 @@ class Node(BaseModel):
         # Pack fields into properties
         if self.discipline is not None and 'discipline' not in self.properties:
             self.properties['discipline'] = self.discipline
-        if self.bloom_level is not None and 'bloom_level' not in self.properties:
-            self.properties['bloom_level'] = self.bloom_level
         if self.confidence is not None and 'confidence' not in self.properties:
             self.properties['confidence'] = self.confidence
 
@@ -74,7 +71,7 @@ async def get_nodes(text: str, graph_context: str) -> List[Node]:
         client = get_chat_client()
 
         # Build kwargs, only include temperature if configured
-        kwargs = {"messages": messages, "response_format": {"type": "json_object"}}
+        kwargs: Dict[str, Any] = {"messages": messages, "response_format": {"type": "json_object"}}
         if config.MACHINE_LEARNING.LLM_TEMPERATURE is not None:
             kwargs["temperature"] = config.MACHINE_LEARNING.LLM_TEMPERATURE
 
@@ -186,7 +183,7 @@ async def generate_response_with_context(query: str, context: str) -> str:
         client = get_chat_client()
 
         # Build kwargs, only include temperature if configured
-        kwargs = {"messages": messages}
+        kwargs: Dict[str, Any] = {"messages": messages}
         if config.MACHINE_LEARNING.LLM_TEMPERATURE is not None:
             kwargs["temperature"] = config.MACHINE_LEARNING.LLM_TEMPERATURE
 

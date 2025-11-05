@@ -59,6 +59,10 @@ class ML(BaseModel):
     GEMINI_API_KEY: str = Field(environ.get("GEMINI_API_KEY", ""), description="Google Gemini API key")
     GEMINI_CHAT_MODEL: str = Field(environ.get("GEMINI_CHAT_MODEL", ""), description="Google Gemini chat model")
 
+    # OpenRouter Configuration
+    OPENROUTER_API_KEY: str = Field(environ.get("OPENROUTER_API_KEY", ""), description="OpenRouter API key")
+    OPENROUTER_CHAT_MODEL: str = Field(environ.get("OPENROUTER_CHAT_MODEL", ""), description="OpenRouter chat model")
+
 class BaseConfig(BaseSettings):
     """
     Defines the application's configuration settings.

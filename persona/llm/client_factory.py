@@ -8,6 +8,7 @@ from .providers.openai_client import OpenAIClient
 from .providers.azure_openai_client import AzureOpenAIClient
 from .providers.anthropic_client import AnthropicClient
 from .providers.gemini_client import GeminiClient
+from .providers.openrouter_client import OpenRouterClient
 from server.config import config
 from server.logging_config import get_logger
 
@@ -92,20 +93,33 @@ def create_gemini_client() -> GeminiClient:
         raise ValueError("GEMINI_API_KEY is required for Gemini provider")
     if not config.MACHINE_LEARNING.GEMINI_CHAT_MODEL:
         raise ValueError("GEMINI_CHAT_MODEL is required for Gemini provider")
-    
+
     return GeminiClient(
         api_key=config.MACHINE_LEARNING.GEMINI_API_KEY,
         chat_model=config.MACHINE_LEARNING.GEMINI_CHAT_MODEL
     )
 
 
+def create_openrouter_client() -> OpenRouterClient:
+    """Create OpenRouter client"""
+    if not config.MACHINE_LEARNING.OPENROUTER_API_KEY:
+        raise ValueError("OPENROUTER_API_KEY is required for OpenRouter provider")
+    if not config.MACHINE_LEARNING.OPENROUTER_CHAT_MODEL:
+        raise ValueError("OPENROUTER_CHAT_MODEL is required for OpenRouter provider")
+
+    return OpenRouterClient(
+        api_key=config.MACHINE_LEARNING.OPENROUTER_API_KEY,
+        chat_model=config.MACHINE_LEARNING.OPENROUTER_CHAT_MODEL
+    )
+
+
 def create_client(provider: str) -> BaseLLMClient:
     """
     Create a client for the specified provider.
-    
+
     Args:
-        provider: Provider name (openai, azure, anthropic, gemini)
-        
+        provider: Provider name (openai, azure, anthropic, gemini, openrouter)
+
     Returns:
         BaseLLMClient instance
     """
@@ -117,6 +131,8 @@ def create_client(provider: str) -> BaseLLMClient:
         return create_anthropic_client()
     elif provider == "gemini":
         return create_gemini_client()
+    elif provider == "openrouter":
+        return create_openrouter_client()
     else:
         raise ValueError(f"Unsupported provider: {provider}")
 

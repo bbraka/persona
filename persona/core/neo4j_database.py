@@ -101,12 +101,15 @@ class Neo4jConnectionManager:
                 node_type = (node.get("type") or "Unknown").replace(" ", "")
                 properties = node.get("properties", {})
 
+                # Use CREATE for CognitiveLevel nodes to allow duplicates (each concept has its own)
+                # Use MERGE for other nodes to avoid duplicates with same (name, UserId)
+                operation = "CREATE" if node_type == "CognitiveLevel" else "MERGE"
+
                 # Base query with standard fields including temporal fields
                 query = (
-                    f"MERGE (n:NodeName:`{node_type}` {{name: $name, UserId: $user_id}}) "
+                    f"{operation} (n:NodeName:`{node_type}` {{name: $name, UserId: $user_id}}) "
                     "SET n.type = $type, "
                     "n.discipline = $discipline, "
-                    "n.bloom_level = $bloom_level, "
                     "n.confidence = $confidence"
                 )
 
@@ -115,23 +118,15 @@ class Neo4jConnectionManager:
                     "user_id": user_id,
                     "type": node.get("type", ""),
                     "discipline": properties.get("discipline", ""),
-                    "bloom_level": properties.get("bloom_level", ""),
                     "confidence": properties.get("confidence", 0.0)
                 }
 
-                # Handle temporal fields (created_at and bloom_history)
+                # Handle temporal fields (created_at)
                 # Only set created_at if it doesn't exist (preserve original timestamp)
                 created_at = node.get("created_at")
                 if created_at:
                     query += ", n.created_at = COALESCE(n.created_at, $created_at)"
                     params["created_at"] = created_at
-
-                # Set bloom_history if provided
-                # Neo4j doesn't support arrays of maps, so store as JSON string
-                bloom_history = node.get("bloom_history")
-                if bloom_history:
-                    query += ", n.bloom_history = $bloom_history"
-                    params["bloom_history"] = json.dumps(bloom_history) if bloom_history else None
 
                 # Handle chunk_ids array
                 chunk_ids = node.get("chunk_ids", [])
@@ -148,7 +143,7 @@ class Neo4jConnectionManager:
 
                 # Add custom properties dynamically (exclude standard PKG properties and entity IDs)
                 if properties:
-                    standard_props = {"discipline", "bloom_level", "confidence", "type", "chunk_ids", "book_id", "highlight_id", "writing_id"}
+                    standard_props = {"discipline", "confidence", "type", "chunk_ids", "book_id", "highlight_id", "writing_id"}
                     custom_props = {k: v for k, v in properties.items() if k not in standard_props}
 
                     logger.debug(f"Node {node['name']}: Found {len(custom_props)} custom properties: {list(custom_props.keys())}")
@@ -203,18 +198,16 @@ class Neo4jConnectionManager:
         nodes: List[Dict[str, Any]],
         relationships: List[Dict[str, Any]],
         embeddings_data: List[Dict[str, Any]],
-        bloom_updates: List[Dict[str, Any]],
         user_id: str
     ) -> None:
         """
         Execute entire graph update in a single transaction for atomicity.
         If any step fails, all changes are rolled back.
-        
+
         Args:
             nodes: List of node dicts with 'name', 'type', 'properties'
             relationships: List of relationship dicts with 'source', 'target', 'relation'
             embeddings_data: List of dicts with 'node_name' and 'embedding'
-            bloom_updates: List of dicts with 'node_name' and 'properties' (including bloom_level)
             user_id: User ID
         """
         if not await self.user_exists(user_id):
@@ -229,8 +222,24 @@ class Neo4jConnectionManager:
                     # Store PKG properties as individual fields
                     # Use node type as additional label for better visualization
                     node_type = (node.get("type") or "Unknown").replace(" ", "")
+
+                    # VALIDATION: CognitiveLevel nodes MUST have concept_uuid
+                    if node_type == "CognitiveLevel":
+                        properties = node.get("properties", {})
+                        concept_uuid = properties.get("concept_uuid")
+                        if not concept_uuid:
+                            logger.error(
+                                f"CRITICAL: Cannot create CognitiveLevel node '{node['name']}' without concept_uuid. "
+                                f"Skipping node creation."
+                            )
+                            continue
+
+                    # Use CREATE for CognitiveLevel nodes to allow duplicates (each concept has its own)
+                    # Use MERGE for other nodes to avoid duplicates with same (name, UserId)
+                    operation = "CREATE" if node_type == "CognitiveLevel" else "MERGE"
+
                     query = (
-                        f"MERGE (n:NodeName:`{node_type}` {{name: $name, UserId: $user_id}}) "
+                        f"{operation} (n:NodeName:`{node_type}` {{name: $name, UserId: $user_id}}) "
                         "SET n.type = $type, "
                         "n.discipline = $discipline, "
                         "n.bloom_level = $bloom_level, "
@@ -246,19 +255,12 @@ class Neo4jConnectionManager:
                         "confidence": properties.get("confidence", 0.0)
                     }
 
-                    # Handle temporal fields (created_at and bloom_history)
+                    # Handle temporal fields (created_at)
                     # Only set created_at if it doesn't exist (preserve original timestamp)
                     created_at = node.get("created_at")
                     if created_at:
                         query += ", n.created_at = COALESCE(n.created_at, $created_at)"
                         params["created_at"] = created_at
-
-                    # Set bloom_history if provided
-                    # Neo4j doesn't support arrays of maps, so store as JSON string
-                    bloom_history = node.get("bloom_history")
-                    if bloom_history:
-                        query += ", n.bloom_history = $bloom_history"
-                        params["bloom_history"] = json.dumps(bloom_history) if bloom_history else None
 
                     # Handle chunk_ids array
                     chunk_ids = node.get("chunk_ids", [])
@@ -273,6 +275,17 @@ class Neo4jConnectionManager:
                         query += f", n.{id_field} = ${id_field}"
                         params[id_field] = ids
 
+                    # Add custom properties dynamically (like concept_name for CognitiveLevel nodes)
+                    if properties:
+                        standard_props = {"discipline", "confidence", "type", "bloom_level", "chunk_ids", "book_id", "highlight_id", "writing_id"}
+                        custom_props = {k: v for k, v in properties.items() if k not in standard_props}
+
+                        for prop_key, prop_value in custom_props.items():
+                            # Sanitize property key to be Cypher-safe
+                            safe_key = prop_key.replace(" ", "_").replace("-", "_")
+                            query += f", n.{safe_key} = ${safe_key}"
+                            params[safe_key] = str(prop_value)
+
                     # DEBUG: Log entity IDs for specific node
                     if node['name'] == "Middle of the roaders":
                         logger.info(
@@ -286,6 +299,36 @@ class Neo4jConnectionManager:
                     logger.debug(f"Transaction: Created/updated node {node['name']}")
                 # Step 2: Create relationships
                 for relationship in relationships:
+                    relation_type = relationship["relation"]
+
+                    # Special validation for HAS_UNDERSTANDING_LEVEL relationships
+                    # Only create if Concept and CognitiveLevel have matching concept_uuid
+                    if relation_type == "HAS_UNDERSTANDING_LEVEL":
+                        validation_query = """
+                        MATCH (source {UserId: $user_id}), (target {UserId: $user_id})
+                        WHERE source.name = $source AND target.name = $target
+                          AND source.type = 'Concept' AND target.type = 'CognitiveLevel'
+                          AND source.concept_uuid IS NOT NULL AND target.concept_uuid IS NOT NULL
+                          AND source.concept_uuid = target.concept_uuid
+                        RETURN count(*) AS valid_count
+                        """
+                        validation_result = await tx.run(validation_query, {
+                            "source": relationship["source"],
+                            "target": relationship["target"],
+                            "user_id": user_id
+                        })
+                        validation_data = await validation_result.data()
+                        valid_count = validation_data[0]["valid_count"] if validation_data else 0
+
+                        if valid_count == 0:
+                            logger.warning(
+                                f"Skipping HAS_UNDERSTANDING_LEVEL relationship: "
+                                f"'{relationship['source']}' -> '{relationship['target']}' "
+                                f"(mismatched or missing concept_uuid)"
+                            )
+                            continue
+
+                    # Create the relationship
                     query = (
                         "MATCH (source {UserId: $user_id}), (target {UserId: $user_id}) "
                         "WHERE source.name = $source AND target.name = $target "
@@ -315,117 +358,10 @@ class Neo4jConnectionManager:
                     # Consume all results to avoid warnings (may be multiple nodes with same name)
                     records = await result.data()
                     logger.debug(f"Transaction: Added embedding for {emb_data['node_name']} ({len(records)} nodes updated)")
-                
-                # Step 4: Update bloom levels and other properties
-                # If bloom_level changed, append to bloom_history before updating
-                from datetime import datetime, timezone
 
-                for bloom_data in bloom_updates:
-                    props = bloom_data.get("properties", {})
-                    new_bloom_level = props.get("bloom_level", "")
-
-                    # Initialize variables to track bloom level changes
-                    check_record = None
-                    current_history = []
-                    bloom_level_changed = False
-
-                    # First, check if bloom_level is changing
-                    if new_bloom_level:
-                        check_query = """
-                        MATCH (n:NodeName {name: $node_name, UserId: $user_id})
-                        RETURN n.bloom_level AS current_level, n.bloom_history AS bloom_history
-                        """
-                        check_result = await tx.run(check_query, {
-                            "node_name": bloom_data["node_name"],
-                            "user_id": user_id
-                        })
-                        check_record = await check_result.single()
-
-                        if check_record:
-                            current_level = check_record.get("current_level")
-                            current_history_json = check_record.get("bloom_history")
-
-                            # If bloom level is changing, append to history
-                            if current_level and new_bloom_level != current_level:
-                                # Parse existing bloom_history
-                                current_history = []
-                                if current_history_json:
-                                    try:
-                                        current_history = json.loads(current_history_json)
-                                    except (json.JSONDecodeError, TypeError):
-                                        logger.warning(f"Failed to parse existing bloom_history for {bloom_data['node_name']}")
-
-                                # Determine source from entity IDs
-                                source_info = []
-                                book_ids = bloom_data.get('book_id', [])
-                                highlight_ids = bloom_data.get('highlight_id', [])
-                                writing_ids = bloom_data.get('writing_id', [])
-
-                                if highlight_ids:
-                                    source_info.append(f"highlight_id:{highlight_ids[0]}")
-                                elif book_ids:
-                                    source_info.append(f"book_id:{book_ids[0]}")
-                                elif writing_ids:
-                                    source_info.append(f"writing_id:{writing_ids[0]}")
-
-                                source = ', '.join(source_info) if source_info else None
-
-                                # Create new bloom level update entry
-                                new_entry = {
-                                    "level": new_bloom_level,
-                                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                                    "source": source
-                                }
-
-                                current_history.append(new_entry)
-                                bloom_level_changed = True
-
-                                # Log the change
-                                logger.info(
-                                    f"Bloom level change detected for '{bloom_data['node_name']}': "
-                                    f"{current_level} → {new_bloom_level}"
-                                )
-
-                    # Now update the node properties (including bloom_level and potentially bloom_history)
-                    query = """
-                    MATCH (n:NodeName {name: $node_name, UserId: $user_id})
-                    SET n.discipline = $discipline,
-                        n.bloom_level = $bloom_level,
-                        n.confidence = $confidence
-                    """
-                    params = {
-                        "node_name": bloom_data["node_name"],
-                        "user_id": user_id,
-                        "discipline": props.get("discipline", ""),
-                        "bloom_level": new_bloom_level,
-                        "confidence": props.get("confidence", 0.0)
-                    }
-
-                    # If we detected a bloom level change, update bloom_history
-                    if bloom_level_changed:
-                        query = query.rstrip() + ", n.bloom_history = $bloom_history\n                    "
-                        params["bloom_history"] = json.dumps(current_history)
-
-                    # Preserve chunk_ids if present
-                    chunk_ids = props.get("chunk_ids")
-                    if chunk_ids:
-                        query = query.rstrip() + ", n.chunk_ids = $chunk_ids\n                    "
-                        params["chunk_ids"] = chunk_ids
-
-                    # Preserve entity IDs if present (book_id, highlight_id, writing_id)
-                    # This ensures entity IDs set in Step 1 aren't lost during Bloom updates
-                    for id_field in ['book_id', 'highlight_id', 'writing_id']:
-                        entity_ids = bloom_data.get(id_field)
-                        if entity_ids:
-                            query = query.rstrip() + f", n.{id_field} = ${id_field}\n                    "
-                            params[id_field] = entity_ids
-
-                    await tx.run(query, params)
-                    logger.debug(f"Transaction: Updated properties for {bloom_data['node_name']}")
-                
                 # Commit all changes atomically
                 await tx.commit()
-                logger.info(f"Transaction committed: {len(nodes)} nodes, {len(relationships)} rels, {len(bloom_updates)} bloom updates")
+                logger.info(f"Transaction committed: {len(nodes)} nodes, {len(relationships)} rels")
                 
             except Exception as e:
                 await tx.rollback()
@@ -803,48 +739,6 @@ class Neo4jConnectionManager:
                     f"{data['total_writing_ids']} writing_ids"
                 )
 
-    async def append_bloom_level_update(
-        self,
-        node_name: str,
-        bloom_update: Dict[str, Any],
-        user_id: str
-    ) -> None:
-        """
-        Append a new Bloom level update to the node's bloom_history.
-        This is used when detecting Bloom level progressions.
-
-        Args:
-            node_name: Name of the node to update
-            bloom_update: Dict with 'level', 'timestamp', 'source' keys
-            user_id: User ID
-        """
-        if not await self.user_exists(user_id):
-            logger.warning(f"User {user_id} does not exist. Cannot append bloom level update.")
-            return
-
-        async with self._ensure_driver().session() as session:
-            # Append to bloom_history array
-            query = """
-            MATCH (n:NodeName {name: $node_name, UserId: $user_id})
-            WITH n, COALESCE(n.bloom_history, []) as existing_history
-            SET n.bloom_history = existing_history + [$bloom_update]
-            RETURN size(n.bloom_history) as total_updates
-            """
-
-            result = await session.run(
-                query,
-                node_name=node_name,
-                user_id=user_id,
-                bloom_update=bloom_update
-            )
-
-            data = await result.single()
-            if data:
-                logger.debug(
-                    f"Appended Bloom level update to node '{node_name}': "
-                    f"total history entries: {data['total_updates']}"
-                )
-
     async def preserve_earliest_created_at(
         self,
         node_name: str,
@@ -899,34 +793,21 @@ class Neo4jConnectionManager:
         MATCH (n:NodeName {name: $node_name, UserId: $user_id})
         RETURN n.name AS name, n.type AS type,
                n.discipline AS discipline,
-               n.bloom_level AS bloom_level,
                n.confidence AS confidence,
-               n.created_at AS created_at,
-               n.bloom_history AS bloom_history
+               n.created_at AS created_at
         """
         async with self._ensure_driver().session() as session:
             result = await session.run(query, node_name=node_name, user_id=user_id)
             record = await result.single()
             if record:
-                # Parse bloom_history from JSON string to list of dicts
-                bloom_history_str = record.get("bloom_history")
-                bloom_history = []
-                if bloom_history_str:
-                    try:
-                        bloom_history = json.loads(bloom_history_str)
-                    except (json.JSONDecodeError, TypeError):
-                        logger.warning(f"Failed to parse bloom_history for node {node_name}")
-
                 return {
                     "name": record["name"],
                     "type": record["type"],
                     "properties": {
                         "discipline": record.get("discipline", ""),
-                        "bloom_level": record.get("bloom_level", ""),
                         "confidence": record.get("confidence", 0.0)
                     },
-                    "created_at": record.get("created_at"),
-                    "bloom_history": bloom_history
+                    "created_at": record.get("created_at")
                 }
             return None
 
@@ -953,10 +834,8 @@ class Neo4jConnectionManager:
         MATCH (n:NodeName {UserId: $user_id})
         RETURN n.name AS name, n.type AS type,
                n.discipline AS discipline,
-               n.bloom_level AS bloom_level,
                n.confidence AS confidence,
-               n.created_at AS created_at,
-               n.bloom_history AS bloom_history
+               n.created_at AS created_at
         """
         async with self._ensure_driver().session() as session:
             result = await session.run(query, user_id=user_id)
@@ -965,25 +844,13 @@ class Neo4jConnectionManager:
             for record in data:
                 record['properties'] = {
                     "discipline": record.get('discipline', ""),
-                    "bloom_level": record.get('bloom_level', ""),
                     "confidence": record.get('confidence', 0.0)
                 }
                 # Keep temporal fields at top level
                 record['created_at'] = record.get('created_at')
 
-                # Parse bloom_history from JSON string to list of dicts
-                bloom_history_str = record.get('bloom_history')
-                bloom_history = []
-                if bloom_history_str:
-                    try:
-                        bloom_history = json.loads(bloom_history_str)
-                    except (json.JSONDecodeError, TypeError):
-                        logger.warning(f"Failed to parse bloom_history for node {record.get('name')}")
-                record['bloom_history'] = bloom_history
-
                 # Remove individual fields from top level
                 record.pop('discipline', None)
-                record.pop('bloom_level', None)
                 record.pop('confidence', None)
             return data
 

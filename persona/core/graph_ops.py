@@ -65,6 +65,12 @@ class GraphOps:
         entity_ids_to_append = {}  # Track entity IDs to append to existing nodes
 
         for node in nodes:
+            # Skip deduplication for CognitiveLevel nodes - each concept should have its own
+            # CognitiveLevel node(s) to track cognitive progression over time
+            if node.type == "CognitiveLevel":
+                nodes_to_create.append(node)
+                continue
+
             # Check if a similar node already exists
             # Pass the embedding if node has one (avoids regenerating)
             similar = await self.deduplicator.find_similar_node(
@@ -140,23 +146,11 @@ class GraphOps:
                     "writing_id": getattr(node, 'writing_id', [])
                 }
 
-                # Add temporal fields (created_at and bloom_history)
+                # Add temporal fields (created_at)
                 created_at = getattr(node, 'created_at', None)
                 if created_at:
                     # Convert datetime to ISO 8601 string for Neo4j
                     node_dict["created_at"] = created_at.isoformat() if hasattr(created_at, 'isoformat') else str(created_at)
-
-                bloom_history = getattr(node, 'bloom_history', [])
-                if bloom_history:
-                    # Convert BloomLevelUpdate objects to dicts for Neo4j
-                    node_dict["bloom_history"] = [
-                        {
-                            "level": update.level,
-                            "timestamp": update.timestamp.isoformat() if hasattr(update.timestamp, 'isoformat') else str(update.timestamp),
-                            "source": update.source
-                        }
-                        for update in bloom_history
-                    ]
 
                 node_dicts.append(node_dict)
 
@@ -197,58 +191,48 @@ class GraphOps:
             logger.warning(f"User {user_id} does not exist. Cannot add relationships.")
             return
 
-        relationship_dicts = [rel.dict() for rel in relationships]
+        # Filter out self-loops (relationships where source == target)
+        filtered_relationships = []
+        self_loop_count = 0
+        for rel in relationships:
+            if rel.source == rel.target:
+                logger.warning(f"Skipping self-loop: {rel.source} -[{rel.relation}]-> {rel.target}")
+                self_loop_count += 1
+                continue
+            filtered_relationships.append(rel)
+
+        if self_loop_count > 0:
+            logger.info(f"Filtered out {self_loop_count} self-loop(s) from {len(relationships)} relationships")
+
+        if not filtered_relationships:
+            logger.warning("No valid relationships to create after filtering self-loops")
+            return
+
+        relationship_dicts = [rel.dict() for rel in filtered_relationships]
         await self.neo4j_manager.create_relationships(relationship_dicts, user_id)
 
     async def get_node_data(self, node_name: str, user_id: str) -> NodeModel:
         if not await self.user_exists(user_id):
             logger.warning(f"User {user_id} does not exist. Cannot get node data.")
-            return NodeModel(name=node_name, type=None, embedding=None, created_at=None, bloom_history=[])
+            return NodeModel(name=node_name, type=None, embedding=None, created_at=None)
 
         node_data = await self.neo4j_manager.get_node_data(node_name, user_id)
         if node_data:
-            from datetime import datetime
-
-            # Parse created_at from ISO string to datetime
+            # Parse created_at from ISO string
             created_at_str = node_data.get("created_at")
-            created_at = None
-            if created_at_str:
-                try:
-                    created_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
-                except (ValueError, AttributeError):
-                    logger.warning(f"Failed to parse created_at: {created_at_str}")
-
-            # Parse bloom_history from dicts
-            bloom_history_data = node_data.get("bloom_history", [])
-            bloom_history = []
-            if bloom_history_data:
-                from persona.models.schema import BloomLevelUpdate
-                for update_dict in bloom_history_data:
-                    try:
-                        timestamp_str = update_dict.get("timestamp")
-                        timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00')) if timestamp_str else datetime.utcnow()
-                        bloom_history.append(BloomLevelUpdate(
-                            level=update_dict.get("level", ""),
-                            timestamp=timestamp,
-                            source=update_dict.get("source")
-                        ))
-                    except (ValueError, AttributeError, KeyError) as e:
-                        logger.warning(f"Failed to parse bloom history entry: {e}")
 
             return NodeModel(
                 name=node_data["name"],
                 type=node_data.get("type"),
                 properties=node_data.get("properties", {}),
                 embedding=node_data.get("embedding"),
-                created_at=created_at_str,  # Keep as string in NodeModel
-                bloom_history=bloom_history_data  # Keep as dict list in NodeModel
+                created_at=created_at_str
             )
         return NodeModel(
             name=node_name,
             type=None,
             embedding=None,
-            created_at=None,
-            bloom_history=[]
+            created_at=None
         )
 
     async def get_node_relationships(self, node_name: str, user_id: str) -> List[RelationshipModel]:
@@ -356,13 +340,13 @@ class GraphOps:
         if not graph_update.nodes and not graph_update.relationships:
             logger.debug("No nodes or relationships to update.")
 
-    async def update_graph_with_bloom_transactional(
+    async def update_graph_transactional(
         self,
         graph_update: NodesAndRelationshipsResponse,
         user_id: str
     ) -> None:
         """
-        Update graph with nodes, relationships, embeddings, and bloom levels in a single transaction.
+        Update graph with nodes, relationships, and embeddings in a single transaction.
         If any step fails, all changes are rolled back for data consistency.
 
         This method includes semantic deduplication:
@@ -390,6 +374,12 @@ class GraphOps:
         entity_ids_to_append = {}  # Maps existing_node_name -> {book_ids: [], highlight_ids: [], writing_ids: []}
 
         for node in graph_update.nodes:
+            # Skip deduplication for CognitiveLevel nodes - each concept should have its own
+            # CognitiveLevel node(s) to track cognitive progression over time
+            if node.type == "CognitiveLevel":
+                nodes_to_create.append(node)
+                continue
+
             # Check if a similar node already exists
             similar = await self.deduplicator.find_similar_node(
                 node_name=node.name,
@@ -481,8 +471,6 @@ class GraphOps:
             # Add temporal fields if present
             if hasattr(node, 'created_at') and node.created_at:
                 node_dict["created_at"] = node.created_at
-            if hasattr(node, 'bloom_history') and node.bloom_history:
-                node_dict["bloom_history"] = node.bloom_history
 
             nodes_data.append(node_dict)
 
@@ -511,83 +499,12 @@ class GraphOps:
                     f"Redirected relationship: {rel.source}-[{rel.relation}]->{rel.target} "
                     f"=> {source}-[{rel.relation}]->{target}"
                 )
-        
-        # STEP 4: Calculate bloom levels for all affected nodes
-        bloom_updates = []
 
-        # Create a lookup map for new nodes to preserve their LLM-extracted properties
-        # Use the actual node names that will be in the database (after mapping)
-        new_nodes_map = {}
-        for node in nodes_to_create:
-            new_nodes_map[node.name] = node.properties
-
-        # Start with nodes that will actually be created
-        affected_nodes = set([node.name for node in nodes_to_create])
-
-        # Add the existing nodes that had duplicates merged into them
-        affected_nodes.update(node_mapping.values())
-        
-        # Get neighbors of affected nodes to recalculate their bloom levels too
-        # Only check relationships for nodes that already exist (mapped duplicates)
-        # New nodes don't have relationships yet, so skip them
-        for existing_node_name in node_mapping.values():
-            try:
-                neighbors = await self.get_node_relationships(existing_node_name, user_id)
-                affected_nodes.update([rel.target for rel in neighbors])
-                affected_nodes.update([rel.source for rel in neighbors])
-            except Exception as e:
-                logger.debug(f"Could not get neighbors for {existing_node_name}: {e}")
-        
-        # Calculate bloom level for each affected node
-        for node_name in affected_nodes:
-            try:
-                bloom_level = await self.calculate_bloom_level(node_name, user_id)
-
-                # For new nodes, use properties from graph_update (LLM-extracted)
-                # For existing nodes, fetch from DB to preserve their existing properties
-                if node_name in new_nodes_map:
-                    # New node: use LLM-extracted properties (discipline, confidence)
-                    props = new_nodes_map[node_name]
-                    current_props = props.copy() if props else {}
-                else:
-                    # Existing node: fetch current properties from DB
-                    node_data = await self.get_node_data(node_name, user_id)
-                    current_props = node_data.properties.copy() if node_data.properties else {}
-
-                # Update with calculated bloom level (overwrites LLM bloom_level with topology-based)
-                current_props['bloom_level'] = bloom_level
-
-                # Include entity IDs for source attribution in bloom_history
-                bloom_update = {
-                    "node_name": node_name,
-                    "properties": current_props
-                }
-
-                # Add entity IDs from appended entities (for merged nodes)
-                if node_name in entity_ids_to_append:
-                    bloom_update['book_id'] = entity_ids_to_append[node_name].get('book_ids', [])
-                    bloom_update['highlight_id'] = entity_ids_to_append[node_name].get('highlight_ids', [])
-                    bloom_update['writing_id'] = entity_ids_to_append[node_name].get('writing_ids', [])
-                # Add entity IDs from new nodes being created
-                elif node_name in new_nodes_map:
-                    # Find the original node object to get entity IDs
-                    for node in nodes_to_create:
-                        if node.name == node_name:
-                            bloom_update['book_id'] = node.book_id if node.book_id else []
-                            bloom_update['highlight_id'] = node.highlight_id if node.highlight_id else []
-                            bloom_update['writing_id'] = node.writing_id if node.writing_id else []
-                            break
-
-                bloom_updates.append(bloom_update)
-            except Exception as e:
-                logger.warning(f"Could not calculate bloom level for {node_name}: {e}")
-        
         # Execute everything in a single transaction
         await self.neo4j_manager.update_graph_transactional(
             nodes=nodes_data,
             relationships=relationships_data,
             embeddings_data=embeddings_data,
-            bloom_updates=bloom_updates,
             user_id=user_id
         )        
 
@@ -607,8 +524,7 @@ class GraphOps:
             type=node.get('type'),
             properties=node.get('properties', {}),
             embedding=node.get('embedding'),
-            created_at=node.get('created_at'),
-            bloom_history=node.get('bloom_history', [])
+            created_at=node.get('created_at')
         ) for node in nodes]
 
     async def get_all_relationships(self, user_id: str) -> List[RelationshipModel]:
@@ -858,7 +774,439 @@ class GraphOps:
 
                 # Default: Remember (passive exposure, basic recognition)
                 return "Remember"
-    
+
+    async def recalculate_bloom_levels_for_concepts(self, concept_names: List[str], user_id: str) -> Dict[str, Any]:
+        """
+        Recalculate bloom levels for given concepts and create new CognitiveLevel nodes if progression occurred.
+
+        Uses the graph structure to track history: Concept -> HAS_UNDERSTANDING_LEVEL -> CognitiveLevel nodes.
+        Each CognitiveLevel node has a created_at timestamp showing when that level was achieved.
+
+        Args:
+            concept_names: List of concept node names to recalculate
+            user_id: User ID
+
+        Returns:
+            Dict with statistics about progressions:
+            {
+                "concepts_processed": int,
+                "progressions": [{"concept": str, "old_level": str, "new_level": str, "timestamp": str}],
+                "no_change": int
+            }
+        """
+        await self.initialize()
+
+        if not concept_names:
+            return {"concepts_processed": 0, "progressions": [], "no_change": 0}
+
+        stats = {
+            "concepts_processed": 0,
+            "progressions": [],
+            "no_change": 0
+        }
+
+        # Bloom level hierarchy for comparison
+        bloom_hierarchy = {
+            "Remember": 1,
+            "Understand": 2,
+            "Apply": 3,
+            "Analyze": 4,
+            "Evaluate": 5,
+            "Create": 6
+        }
+
+        from datetime import datetime, timezone
+        current_time = datetime.now(timezone.utc).isoformat()
+
+        for concept_name in concept_names:
+            try:
+                stats["concepts_processed"] += 1
+
+                # Get UUID for the concept
+                concept_uuid = await self._get_or_create_concept_uuid(concept_name, user_id)
+                if not concept_uuid:
+                    logger.error(f"Failed to get UUID for Concept '{concept_name}' during bloom recalculation")
+                    continue
+
+                # Step 1: Get existing CognitiveLevel nodes for this concept via UUID
+                existing_levels = await self._get_concept_cognitive_levels_by_uuid(concept_uuid, user_id)
+
+                # Step 2: Calculate new bloom level based on current graph
+                new_level = await self.calculate_bloom_level(concept_name, user_id)
+
+                # Step 3: Determine highest level already achieved
+                if existing_levels:
+                    # Extract level names directly (no parsing needed with UUID-based approach)
+                    highest_level = max(
+                        existing_levels,
+                        key=lambda x: bloom_hierarchy.get(x["level"], 0)
+                    )
+                    highest_level_name = highest_level["level"]
+                    highest_level_rank = bloom_hierarchy.get(highest_level_name, 0)
+                else:
+                    highest_level_name = None
+                    highest_level_rank = 0
+
+                new_level_rank = bloom_hierarchy.get(new_level, 1)
+
+                # Step 4: If new level is higher, create new CognitiveLevel node + edge
+                if new_level_rank > highest_level_rank:
+                    logger.info(
+                        f"Concept '{concept_name}' progressed from '{highest_level_name}' to '{new_level}'"
+                    )
+
+                    # Create new CognitiveLevel node
+                    await self._create_cognitive_level_node_for_concept(
+                        concept_name=concept_name,
+                        cognitive_level=new_level,
+                        user_id=user_id,
+                        created_at=current_time
+                    )
+
+                    stats["progressions"].append({
+                        "concept": concept_name,
+                        "old_level": highest_level_name,
+                        "new_level": new_level,
+                        "timestamp": current_time
+                    })
+                else:
+                    stats["no_change"] += 1
+                    logger.debug(
+                        f"Concept '{concept_name}' remains at '{highest_level_name}' (calculated: '{new_level}')"
+                    )
+
+            except Exception as e:
+                logger.error(f"Failed to recalculate bloom level for concept '{concept_name}': {e}")
+                continue
+
+        if stats["progressions"]:
+            logger.info(
+                f"Bloom level recalculation complete: {len(stats['progressions'])} progressions, "
+                f"{stats['no_change']} unchanged"
+            )
+
+        return stats
+
+    async def _get_concept_uuid_if_exists(self, concept_name: str, user_id: str) -> Optional[str]:
+        """
+        Get UUID for a Concept node if it exists in the database.
+
+        Does NOT create or modify the node - only reads existing UUID.
+
+        Args:
+            concept_name: Name of the concept node
+            user_id: User ID
+
+        Returns:
+            UUID string if concept exists with UUID, None otherwise
+        """
+        if not self.neo4j_manager.driver:
+            logger.error("Neo4j driver is not initialized.")
+            return None
+
+        query = """
+        MATCH (concept:NodeName {name: $concept_name, UserId: $user_id})
+        WHERE concept.type = 'Concept'
+        RETURN concept.concept_uuid AS uuid
+        """
+
+        async with self.neo4j_manager.driver.session() as session:
+            result = await session.run(query, concept_name=concept_name, user_id=user_id)
+            data = await result.data()
+
+            if data and data[0]["uuid"]:
+                return str(data[0]["uuid"])
+            return None
+
+    async def _get_or_create_concept_uuid(self, concept_name: str, user_id: str) -> Optional[str]:
+        """
+        Get or create a UUID for a Concept node.
+
+        This UUID is shared with the Concept's CognitiveLevel nodes to enforce
+        that only nodes with matching UUIDs can be connected.
+
+        Args:
+            concept_name: Name of the concept node
+            user_id: User ID
+
+        Returns:
+            UUID string for the concept, or None if concept doesn't exist
+        """
+        if not self.neo4j_manager.driver:
+            logger.error("Neo4j driver is not initialized.")
+            return None
+
+        query = """
+        MATCH (concept:NodeName {name: $concept_name, UserId: $user_id})
+        WHERE concept.type = 'Concept'
+        SET concept.concept_uuid = COALESCE(concept.concept_uuid, randomUUID())
+        RETURN concept.concept_uuid AS uuid
+        """
+
+        async with self.neo4j_manager.driver.session() as session:
+            result = await session.run(query, concept_name=concept_name, user_id=user_id)
+            data = await result.data()
+
+            if data:
+                return str(data[0]["uuid"])
+            return None
+
+    async def _get_concept_cognitive_levels_by_uuid(self, concept_uuid: str, user_id: str) -> List[Dict[str, str]]:
+        """
+        Get all CognitiveLevel nodes for a specific Concept via shared UUID.
+
+        Args:
+            concept_uuid: UUID of the concept node
+            user_id: User ID
+
+        Returns:
+            List of dicts: [{"level": "Remember", "created_at": "2025-11-05T10:00:00"}, ...]
+        """
+        if not self.neo4j_manager.driver:
+            logger.error("Neo4j driver is not initialized.")
+            return []
+
+        query = """
+        MATCH (cl:NodeName {UserId: $user_id})
+        WHERE cl.type = 'CognitiveLevel' AND cl.concept_uuid = $concept_uuid
+        RETURN cl.name AS level, cl.created_at AS created_at
+        ORDER BY cl.created_at ASC
+        """
+
+        async with self.neo4j_manager.driver.session() as session:
+            result = await session.run(query, concept_uuid=concept_uuid, user_id=user_id)
+            data = await result.data()
+
+            return [
+                {
+                    "level": str(record["level"]),
+                    "created_at": str(record.get("created_at", ""))
+                }
+                for record in data
+            ]
+
+    async def _get_concept_cognitive_levels(self, concept_name: str, user_id: str) -> List[Dict[str, str]]:
+        """
+        Get all CognitiveLevel nodes connected to a concept, ordered by created_at.
+
+        Returns:
+            List of dicts: [{"level": "Remember", "created_at": "2025-11-05T10:00:00"}, ...]
+        """
+        if not self.neo4j_manager.driver:
+            logger.error("Neo4j driver is not initialized.")
+            return []
+
+        query = """
+        MATCH (concept:NodeName {name: $concept_name, UserId: $user_id})
+        -[:HAS_UNDERSTANDING_LEVEL]->(cl:NodeName)
+        WHERE cl.type = 'CognitiveLevel'
+        RETURN cl.name AS level, cl.created_at AS created_at
+        ORDER BY cl.created_at ASC
+        """
+
+        async with self.neo4j_manager.driver.session() as session:
+            result = await session.run(query, concept_name=concept_name, user_id=user_id)
+            data = await result.data()
+
+            return [
+                {
+                    "level": str(record["level"]),
+                    "created_at": str(record.get("created_at", ""))
+                }
+                for record in data
+            ]
+
+    async def _create_cognitive_level_node_for_concept(
+        self,
+        concept_name: str,
+        cognitive_level: str,
+        user_id: str,
+        created_at: str
+    ) -> None:
+        """
+        Create a new CognitiveLevel node and connect it to a concept using shared UUID.
+
+        The Concept and CognitiveLevel share a UUID to enforce that only nodes with
+        matching UUIDs can be connected. This allows CognitiveLevel names to remain
+        simple ("Remember", "Understand", etc.) while maintaining uniqueness.
+
+        MANDATORY: concept_uuid is required for ALL CognitiveLevel nodes. Nodes will
+        not be created without a valid concept_uuid.
+
+        Validation: Ensures that the Concept doesn't already have a connection to
+        a CognitiveLevel with the same value (e.g., can't connect to two "Remember" nodes).
+
+        Args:
+            concept_name: Name of the concept node
+            cognitive_level: Bloom level name (e.g., "Apply")
+            user_id: User ID
+            created_at: ISO timestamp when this level was achieved
+        """
+        if not self.neo4j_manager.driver:
+            logger.error("Neo4j driver is not initialized.")
+            return
+
+        # Get or create UUID for the concept
+        concept_uuid = await self._get_or_create_concept_uuid(concept_name, user_id)
+        if not concept_uuid:
+            logger.error(
+                f"CRITICAL: Cannot create CognitiveLevel node without concept_uuid. "
+                f"Failed to get UUID for Concept '{concept_name}'. Node creation aborted."
+            )
+            return
+
+        # Validation: Check for duplicate CognitiveLevel values using UUID
+        existing_levels = await self._get_concept_cognitive_levels_by_uuid(concept_uuid, user_id)
+        existing_values = {level_data["level"] for level_data in existing_levels}
+
+        if cognitive_level in existing_values:
+            logger.error(
+                f"Validation failed: Concept '{concept_name}' already connected to "
+                f"CognitiveLevel value '{cognitive_level}'. Skipping duplicate creation."
+            )
+            return
+
+        # Create CognitiveLevel node with simple name and shared UUID
+        query = """
+        // Find the concept node
+        MATCH (concept:NodeName {name: $concept_name, UserId: $user_id})
+        WHERE concept.type = 'Concept'
+
+        // Create new CognitiveLevel node with shared UUID
+        CREATE (cl:NodeName {
+            name: $cognitive_level,
+            type: 'CognitiveLevel',
+            UserId: $user_id,
+            concept_uuid: $concept_uuid,
+            created_at: $created_at
+        })
+
+        // Create relationship (CognitiveLevel can only have ONE edge - to its parent Concept)
+        CREATE (concept)-[:HAS_UNDERSTANDING_LEVEL]->(cl)
+
+        RETURN cl.name AS level
+        """
+
+        async with self.neo4j_manager.driver.session() as session:
+            await session.run(
+                query,
+                concept_name=concept_name,
+                cognitive_level=cognitive_level,
+                concept_uuid=concept_uuid,
+                user_id=user_id,
+                created_at=created_at
+            )
+
+        logger.debug(
+            f"Created CognitiveLevel '{cognitive_level}' for concept '{concept_name}' (UUID: {concept_uuid}) at {created_at}"
+        )
+
+    async def cleanup_invalid_cognitive_level_relationships(self, user_id: str) -> Dict[str, int]:
+        """
+        Clean up invalid CognitiveLevel data:
+        1. Delete HAS_UNDERSTANDING_LEVEL relationships where Concept and CognitiveLevel have mismatched concept_uuid
+        2. Delete CognitiveLevel nodes that don't have a concept_uuid property (mandatory field)
+
+        This ensures the UUID-based constraint is enforced: only nodes with matching
+        UUIDs should be connected via HAS_UNDERSTANDING_LEVEL relationships, and all
+        CognitiveLevel nodes MUST have a concept_uuid.
+
+        Args:
+            user_id: User ID
+
+        Returns:
+            Dict with cleanup statistics: {"deleted_relationships": int, "deleted_nodes": int}
+        """
+        if not self.neo4j_manager.driver:
+            logger.error("Neo4j driver is not initialized.")
+            return {"deleted_relationships": 0, "deleted_nodes": 0}
+
+        # Step 1: Delete invalid relationships (mismatched UUIDs)
+        relationship_query = """
+        // Find all HAS_UNDERSTANDING_LEVEL relationships with mismatched UUIDs
+        MATCH (concept:NodeName {UserId: $user_id})-[r:HAS_UNDERSTANDING_LEVEL]->(cl:NodeName {UserId: $user_id})
+        WHERE concept.type = 'Concept'
+          AND cl.type = 'CognitiveLevel'
+          AND concept.concept_uuid <> cl.concept_uuid
+
+        // Delete the invalid relationship
+        DELETE r
+
+        RETURN count(r) AS deleted_count
+        """
+
+        # Step 2: Delete CognitiveLevel nodes without concept_uuid (mandatory field)
+        node_query = """
+        // Find all CognitiveLevel nodes without concept_uuid
+        MATCH (cl:NodeName {UserId: $user_id})
+        WHERE cl.type = 'CognitiveLevel'
+          AND (cl.concept_uuid IS NULL OR cl.concept_uuid = '')
+
+        // Detach and delete the node (removes all relationships)
+        DETACH DELETE cl
+
+        RETURN count(cl) AS deleted_count
+        """
+
+        async with self.neo4j_manager.driver.session() as session:
+            # Clean up invalid relationships
+            rel_result = await session.run(relationship_query, user_id=user_id)
+            rel_data = await rel_result.data()
+            deleted_relationships = rel_data[0]["deleted_count"] if rel_data else 0
+
+            # Clean up nodes without concept_uuid
+            node_result = await session.run(node_query, user_id=user_id)
+            node_data = await node_result.data()
+            deleted_nodes = node_data[0]["deleted_count"] if node_data else 0
+
+            if deleted_relationships > 0:
+                logger.warning(
+                    f"Cleaned up {deleted_relationships} invalid CognitiveLevel relationship(s) "
+                    f"with mismatched concept_uuid values"
+                )
+
+            if deleted_nodes > 0:
+                logger.warning(
+                    f"Deleted {deleted_nodes} CognitiveLevel node(s) without concept_uuid property (mandatory field)"
+                )
+
+            return {
+                "deleted_relationships": deleted_relationships,
+                "deleted_nodes": deleted_nodes
+            }
+
+    async def get_concept_bloom_history(self, concept_name: str, user_id: str) -> List[Dict[str, str]]:
+        """
+        Get the bloom level progression history for a concept.
+
+        Queries all CognitiveLevel nodes connected to the concept via shared UUID
+        and returns them in chronological order based on created_at timestamps.
+
+        Args:
+            concept_name: Name of the concept node
+            user_id: User ID
+
+        Returns:
+            List of progression events: [{"level": "Remember", "achieved_at": "2025-11-05T10:00:00"}, ...]
+        """
+        # Get UUID for the concept
+        concept_uuid = await self._get_or_create_concept_uuid(concept_name, user_id)
+        if not concept_uuid:
+            logger.error(f"Failed to get UUID for Concept '{concept_name}' in bloom history query")
+            return []
+
+        levels = await self._get_concept_cognitive_levels_by_uuid(concept_uuid, user_id)
+
+        # Format for external consumption (no parsing needed with UUID-based approach)
+        result = []
+        for level in levels:
+            result.append({
+                "level": level["level"],
+                "achieved_at": level["created_at"] or "Unknown"
+            })
+
+        return result
+
     async def update_node_properties(self, node_name: str, user_id: str, properties: Dict[str, Any]) -> None:
         """Update properties of an existing node"""
         if not await self.user_exists(user_id):
@@ -920,10 +1268,17 @@ class GraphContextRetriever:
         """
         if node_name in context or hops_left < 0:
             return
-        
+
         node_data = await self.graph_ops.get_node_data(node_name, user_id)
+
+        # Skip CognitiveLevel nodes - they should not appear in relationship generation context
+        # to prevent new Concepts from connecting to existing CognitiveLevel nodes
+        if node_data.type == "CognitiveLevel":
+            logger.debug(f"Skipping CognitiveLevel node '{node_name}' from relationship context")
+            return
+
         relationships = await self.graph_ops.get_node_relationships(node_name, user_id)
-        
+
         context[node_name] = {
             'properties': node_data.properties,
             'relationships': []

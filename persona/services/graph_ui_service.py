@@ -208,7 +208,6 @@ class GraphUIService:
                n.highlight_id AS highlight_id,
                n.writing_id AS writing_id,
                n.created_at AS created_at,
-               n.bloom_history AS bloom_history,
                properties(n) AS properties
         ORDER BY n.name
         """
@@ -285,18 +284,7 @@ class GraphUIService:
                 props.pop("highlight_id", None)
                 props.pop("writing_id", None)
                 props.pop("created_at", None)
-                props.pop("bloom_history", None)
                 props.pop("embedding", None)
-
-                # Parse bloom_history from JSON string if present
-                import json
-                bloom_history_str = node.get("bloom_history")
-                bloom_history = []
-                if bloom_history_str:
-                    try:
-                        bloom_history = json.loads(bloom_history_str)
-                    except (json.JSONDecodeError, TypeError):
-                        logger.warning(f"Failed to parse bloom_history for node {node.get('name')}")
 
                 nodes.append({
                     "id": node["id"],
@@ -310,7 +298,6 @@ class GraphUIService:
                     "highlight_id": node.get("highlight_id", []),
                     "writing_id": node.get("writing_id", []),
                     "created_at": node.get("created_at"),
-                    "bloom_history": bloom_history,
                     "properties": props
                 })
 

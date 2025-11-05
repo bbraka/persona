@@ -5,9 +5,8 @@ from persona.models.schema import (
     NodeModel, RelationshipModel, GraphUpdateModel,
     UnstructuredData, NodesAndRelationshipsResponse, Node, Relationship
 )
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from collections import defaultdict
-import asyncio
 from server.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -49,6 +48,9 @@ class GraphConstructor:
         Returns:
             List of all relationships
         """
+        if self.graph_context_retriever is None:
+            raise RuntimeError("GraphConstructor must be used as an async context manager")
+
         relationships = []
 
         # Get existing graph context
@@ -89,25 +91,17 @@ class GraphConstructor:
             properties = {}
             if node.discipline:
                 properties["discipline"] = node.discipline
-            if node.bloom_level:
-                properties["bloom_level"] = node.bloom_level
             if node.confidence is not None:
                 properties["confidence"] = node.confidence
+
+            # Add concept_uuid if present (for CognitiveLevel nodes and Concept nodes)
+            if hasattr(node, 'concept_uuid') and node.concept_uuid:
+                properties["concept_uuid"] = node.concept_uuid
 
             # Convert datetime to ISO string
             created_at_str = None
             if hasattr(node, 'created_at') and node.created_at:
                 created_at_str = node.created_at.isoformat() if hasattr(node.created_at, 'isoformat') else str(node.created_at)
-
-            # Convert BloomLevelUpdate objects to dicts
-            bloom_history_dicts = []
-            if hasattr(node, 'bloom_history') and node.bloom_history:
-                for update in node.bloom_history:
-                    bloom_history_dicts.append({
-                        "level": update.level,
-                        "timestamp": update.timestamp.isoformat() if hasattr(update.timestamp, 'isoformat') else str(update.timestamp),
-                        "source": update.source
-                    })
 
             node_models.append(NodeModel(
                 name=node.name,
@@ -118,11 +112,333 @@ class GraphConstructor:
                 writing_id=node.writing_id if node.writing_id else [],
                 properties=properties,
                 embedding=embedding,
-                created_at=created_at_str,
-                bloom_history=bloom_history_dicts
+                created_at=created_at_str
             ))
 
         return node_models
+
+    def _schema_nodes_to_llm_nodes(self, nodes: List[Node]) -> List[LLMNode]:
+        """
+        Convert schema Node objects to LLM Node objects for relationship generation.
+
+        Args:
+            nodes: List of schema Node objects
+
+        Returns:
+            List of LLMNode objects
+        """
+        return [
+            LLMNode(
+                name=node.name,
+                type=node.type,
+                chunk_ids=node.chunk_ids,
+                book_id=node.book_id,
+                highlight_id=node.highlight_id,
+                writing_id=node.writing_id,
+                discipline=node.discipline,
+                confidence=node.confidence,
+                source_index=getattr(node, 'source_index', None)
+            ) for node in nodes
+        ]
+
+    def _llm_relationships_to_schema(self, llm_relationships) -> List[Relationship]:
+        """
+        Convert LLM relationships to schema relationships.
+
+        Args:
+            llm_relationships: List of LLM relationship objects
+
+        Returns:
+            List of schema Relationship objects
+        """
+        return [
+            Relationship(source=rel.source, target=rel.target, relation=rel.relation)
+            for rel in llm_relationships
+        ]
+
+    async def _get_or_generate_concept_uuid(self, concept_name: str) -> Optional[str]:
+        """
+        Get existing UUID for a Concept node from database, or generate a new one.
+
+        For new Concepts that haven't been saved yet, generates a UUID in memory.
+        For existing Concepts, retrieves the UUID from the database.
+
+        Args:
+            concept_name: Name of the concept node
+
+        Returns:
+            UUID string for the concept
+        """
+        if self.graph_ops is None:
+            return None
+
+        # Try to get existing UUID from database
+        existing_uuid = await self.graph_ops._get_concept_uuid_if_exists(concept_name, self.user_id)
+
+        if existing_uuid:
+            return existing_uuid
+
+        # Generate new UUID in memory for new Concept nodes
+        import uuid
+        return str(uuid.uuid4())
+
+    async def _get_existing_cognitive_level_values(self, concept_uuid: str) -> set:
+        """
+        Query existing CognitiveLevel values connected to a Concept via shared UUID.
+
+        Args:
+            concept_uuid: UUID of the concept node
+
+        Returns:
+            Set of cognitive level values (e.g., {"Remember", "Understand"})
+        """
+        if self.graph_ops is None:
+            return set()
+        existing_levels = await self.graph_ops._get_concept_cognitive_levels_by_uuid(concept_uuid, self.user_id)
+
+        # Extract level names directly (no parsing needed with UUID-based approach)
+        return {level_data["level"] for level_data in existing_levels}
+
+    async def _create_cognitive_level_relationships(self, nodes: List[Node]) -> List[Relationship]:
+        """
+        Create HAS_UNDERSTANDING_LEVEL relationships between Concepts and CognitiveLevels.
+
+        IMPORTANT: Only Concept nodes (type="Concept") get CognitiveLevel relationships.
+        Term nodes, Person nodes, and other types do NOT receive cognitive level tracking.
+
+        For batch ingestion: Groups nodes by source_index and creates one relationship
+        per source_index connecting the Concept to its CognitiveLevel.
+
+        For single ingestion: Creates relationships between all Concepts and CognitiveLevels
+        (since source_index will be None for all nodes).
+
+        Validation Rules:
+        1. Each CognitiveLevel node can have ONLY ONE outgoing edge (to its parent Concept)
+        2. A Concept cannot have duplicate CognitiveLevel values (e.g., can't connect to two "Remember" nodes)
+        3. Each Concept node MUST have at least one connection to a CognitiveLevel node
+
+        Args:
+            nodes: List of schema Node objects
+
+        Returns:
+            List of Relationship objects with HAS_UNDERSTANDING_LEVEL relations
+        """
+        if self.graph_ops is None:
+            raise RuntimeError("GraphConstructor must be used as an async context manager")
+
+        relationships = []
+
+        # Track which CognitiveLevel nodes are being connected (validation rule #1)
+        cognitive_level_connections = {}  # cognitive_level.name -> concept.name
+
+        # Track which Concepts have received relationships (validation rule #3)
+        concepts_with_relationships = set()
+
+        # Check if we have source_index data (batch ingestion)
+        has_source_index = any(getattr(node, 'source_index', None) is not None for node in nodes)
+
+        if has_source_index:
+            # Batch mode: Group by source_index
+            from collections import defaultdict
+            source_groups = defaultdict(lambda: {'concepts': [], 'cognitive_levels': []})
+
+            for node in nodes:
+                source_idx = getattr(node, 'source_index', None)
+                if source_idx is None:
+                    continue
+
+                if node.type == "Concept":
+                    source_groups[source_idx]['concepts'].append(node)
+                elif node.type == "CognitiveLevel":
+                    source_groups[source_idx]['cognitive_levels'].append(node)
+
+            # Create one relationship per source_index
+            for source_idx, group in source_groups.items():
+                concepts = group['concepts']
+                cognitive_levels = group['cognitive_levels']
+
+                if not concepts or not cognitive_levels:
+                    if concepts and not cognitive_levels:
+                        logger.warning(f"Source [{source_idx}] has Concept(s) but no CognitiveLevel")
+                    elif cognitive_levels and not concepts:
+                        logger.warning(f"Source [{source_idx}] has CognitiveLevel(s) but no Concept")
+                    continue
+
+                # Take first Concept and first CognitiveLevel for this source
+                concept = concepts[0]
+                cognitive_level = cognitive_levels[0]
+
+                # Get or generate UUID for the Concept
+                concept_uuid = await self._get_or_generate_concept_uuid(concept.name)
+                if not concept_uuid:
+                    logger.error(f"Failed to get UUID for Concept '{concept.name}'")
+                    continue
+
+                # Add UUID to Concept node for database storage
+                concept.concept_uuid = concept_uuid  # type: ignore
+
+                # Store the level value
+                level_value = cognitive_level.name
+
+                # Validation #2: Concept cannot have duplicate CognitiveLevel values
+                existing_values = await self._get_existing_cognitive_level_values(concept_uuid)
+                if level_value in existing_values:
+                    logger.error(
+                        f"Validation failed: Concept '{concept.name}' already connected to "
+                        f"CognitiveLevel value '{level_value}'"
+                    )
+                    continue
+
+                # Validation #1: CognitiveLevel can only connect to ONE Concept
+                # Track using cognitive_level.name (the simple level name like "Remember")
+                if cognitive_level.name in cognitive_level_connections:
+                    logger.error(
+                        f"Validation failed: CognitiveLevel '{cognitive_level.name}' already connected to "
+                        f"'{cognitive_level_connections[cognitive_level.name]}', cannot connect to '{concept.name}'"
+                    )
+                    continue
+
+                # Add shared UUID to CognitiveLevel node
+                cognitive_level.concept_uuid = concept_uuid  # type: ignore
+
+                # Track this connection
+                cognitive_level_connections[cognitive_level.name] = concept.name
+                concepts_with_relationships.add(concept.name)
+
+                relationships.append(Relationship(
+                    source=concept.name,
+                    target=cognitive_level.name,
+                    relation="HAS_UNDERSTANDING_LEVEL"
+                ))
+
+                if len(concepts) > 1:
+                    logger.warning(f"Source [{source_idx}] has {len(concepts)} Concepts, using first: {concept.name}")
+                if len(cognitive_levels) > 1:
+                    logger.warning(f"Source [{source_idx}] has {len(cognitive_levels)} CognitiveLevels, using first: {cognitive_level.name}")
+
+        else:
+            # Single insert mode: Connect all Concepts to all CognitiveLevels
+            concepts = [n for n in nodes if n.type == "Concept"]
+            cognitive_levels = [n for n in nodes if n.type == "CognitiveLevel"]
+
+            if concepts and cognitive_levels:
+                # For single insert, typically expect 1 Concept and 1 CognitiveLevel
+                for concept in concepts:
+                    # Get or generate UUID for the Concept
+                    concept_uuid = await self._get_or_generate_concept_uuid(concept.name)
+                    if not concept_uuid:
+                        logger.error(f"Failed to get UUID for Concept '{concept.name}'")
+                        continue
+
+                    # Add UUID to Concept node for database storage
+                    concept.concept_uuid = concept_uuid  # type: ignore
+
+                    for cognitive_level in cognitive_levels:
+                        # Store the level value
+                        level_value = cognitive_level.name
+
+                        # Validation #2: Concept cannot have duplicate CognitiveLevel values
+                        existing_values = await self._get_existing_cognitive_level_values(concept_uuid)
+                        if level_value in existing_values:
+                            logger.error(
+                                f"Validation failed: Concept '{concept.name}' already connected to "
+                                f"CognitiveLevel value '{level_value}'"
+                            )
+                            continue
+
+                        # Validation #1: CognitiveLevel can only connect to ONE Concept
+                        if cognitive_level.name in cognitive_level_connections:
+                            logger.error(
+                                f"Validation failed: CognitiveLevel '{cognitive_level.name}' already connected to "
+                                f"'{cognitive_level_connections[cognitive_level.name]}', cannot connect to '{concept.name}'"
+                            )
+                            continue
+
+                        # Add shared UUID to CognitiveLevel node
+                        cognitive_level.concept_uuid = concept_uuid  # type: ignore
+
+                        # Track this connection
+                        cognitive_level_connections[cognitive_level.name] = concept.name
+                        concepts_with_relationships.add(concept.name)
+
+                        relationships.append(Relationship(
+                            source=concept.name,
+                            target=cognitive_level.name,
+                            relation="HAS_UNDERSTANDING_LEVEL"
+                        ))
+
+        # Validation #3: Each Concept MUST have at least one CognitiveLevel relationship
+        # If a Concept has no CognitiveLevel, create a default "Remember" level
+        all_concepts = [n for n in nodes if n.type == "Concept"]
+        for concept in all_concepts:
+            # Check if concept received a relationship in this batch
+            if concept.name not in concepts_with_relationships:
+                # Get or generate UUID for the concept
+                concept_uuid = await self._get_or_generate_concept_uuid(concept.name)
+                if not concept_uuid:
+                    logger.error(f"Failed to get UUID for Concept '{concept.name}' during validation")
+                    continue
+
+                # Add UUID to Concept node for database storage
+                concept.concept_uuid = concept_uuid  # type: ignore
+
+                # Check if concept has any existing relationships in the database
+                existing_values = await self._get_existing_cognitive_level_values(concept_uuid)
+                if not existing_values:
+                    logger.warning(
+                        f"Concept '{concept.name}' has no CognitiveLevel relationship. "
+                        f"Creating default 'Remember' level."
+                    )
+
+                    # Create a default CognitiveLevel node and relationship
+                    from datetime import datetime, timezone
+                    default_level_name = "Remember"
+
+                    # Create the default CognitiveLevel node in the database
+                    await self.graph_ops._create_cognitive_level_node_for_concept(
+                        concept_name=concept.name,
+                        cognitive_level=default_level_name,
+                        user_id=self.user_id,
+                        created_at=datetime.now(timezone.utc).isoformat()
+                    )
+
+                    logger.info(f"Created default CognitiveLevel '{default_level_name}' for Concept '{concept.name}'")
+
+        if relationships:
+            logger.info(f"Created {len(relationships)} HAS_UNDERSTANDING_LEVEL relationship(s)")
+
+        return relationships
+
+    async def _recalculate_bloom_levels(self, concept_names: List[str]) -> None:
+        """
+        Recalculate bloom levels for given concepts after ingestion.
+
+        This checks if any concepts have progressed to higher cognitive levels
+        and creates new CognitiveLevel nodes if needed.
+
+        Args:
+            concept_names: List of concept node names to recalculate
+        """
+        if self.graph_ops is None:
+            raise RuntimeError("GraphConstructor must be used as an async context manager")
+
+        try:
+            stats = await self.graph_ops.recalculate_bloom_levels_for_concepts(
+                concept_names=concept_names,
+                user_id=self.user_id
+            )
+
+            if stats["progressions"]:
+                logger.info(
+                    f"Bloom level progression detected: {len(stats['progressions'])} concept(s) advanced"
+                )
+                for progression in stats["progressions"]:
+                    logger.debug(
+                        f"  - {progression['concept']}: {progression['old_level']} → {progression['new_level']}"
+                    )
+        except Exception as e:
+            # Don't fail the entire ingestion if bloom recalculation has issues
+            logger.warning(f"Bloom level recalculation failed (non-fatal): {e}")
 
     async def _save_graph_update(self, nodes: List[Node], relationships: List[Relationship]):
         """
@@ -132,6 +448,8 @@ class GraphConstructor:
             nodes: List of schema Node objects
             relationships: List of Relationship objects
         """
+        if self.graph_ops is None:
+            raise RuntimeError("GraphConstructor must be used as an async context manager")
         from persona.models.schema import RelationshipModel, NodesAndRelationshipsResponse
 
         # Generate embeddings
@@ -141,12 +459,16 @@ class GraphConstructor:
         # Convert to NodeModels
         node_models = self._nodes_to_node_models(nodes, embeddings)
 
-        # Convert relationships
+        # Create cognitive level relationships
+        cognitive_relationships = await self._create_cognitive_level_relationships(nodes)
+
+        # Convert relationships (include both LLM-generated and cognitive level relationships)
+        all_relationships = relationships + cognitive_relationships
         relationship_models = [RelationshipModel(
             source=rel.source,
             target=rel.target,
             relation=rel.relation
-        ) for rel in relationships]
+        ) for rel in all_relationships]
 
         graph_update = NodesAndRelationshipsResponse(
             nodes=node_models,
@@ -155,8 +477,15 @@ class GraphConstructor:
 
         # Save to database
         try:
-            await self.graph_ops.update_graph_with_bloom_transactional(graph_update, self.user_id)
+            await self.graph_ops.update_graph_transactional(graph_update, self.user_id)
             logger.info(f"Successfully saved {len(node_models)} nodes and {len(relationship_models)} relationships")
+
+            # After successful save, recalculate bloom levels for all Concept nodes
+            concept_names = [node.name for node in nodes if node.type == "Concept"]
+            if concept_names:
+                logger.debug(f"Recalculating bloom levels for {len(concept_names)} concept(s)")
+                await self._recalculate_bloom_levels(concept_names)
+
         except Exception as e:
             logger.error(f"Failed to save graph update (transaction rolled back): {e}")
             raise
@@ -173,7 +502,7 @@ class GraphConstructor:
             Schema Node object
         """
         from datetime import datetime
-        from persona.models.schema import BloomLevelUpdate, Node
+        from persona.models.schema import Node
 
         # Extract entity IDs from metadata
         book_ids = [int(metadata['book_id'])] if 'book_id' in metadata else []
@@ -192,25 +521,9 @@ class GraphConstructor:
             except (ValueError, TypeError) as e:
                 logger.warning(f"Failed to parse date from metadata: {e}")
 
-        # Create Bloom history
         current_time = datetime.utcnow()
-        bloom_level = getattr(llm_node, 'bloom_level', '')
-        bloom_history = []
-        if bloom_level:
-            source_info = []
-            if highlight_ids:
-                source_info.append(f"highlight_id:{highlight_ids[0]}")
-            elif book_ids:
-                source_info.append(f"book_id:{book_ids[0]}")
-            source = ', '.join(source_info) if source_info else None
 
-            bloom_history.append(BloomLevelUpdate(
-                level=bloom_level,
-                timestamp=annotation_date or current_time,
-                source=source
-            ))
-
-        return Node(
+        node = Node(
             name=llm_node.name,
             type=llm_node.type,
             chunk_ids=getattr(llm_node, 'chunk_ids', []),
@@ -218,11 +531,15 @@ class GraphConstructor:
             highlight_id=highlight_ids,
             writing_id=writing_ids,
             discipline=getattr(llm_node, 'discipline', ''),
-            bloom_level=bloom_level,
             confidence=getattr(llm_node, 'confidence', 0.0),
-            created_at=annotation_date or current_time,
-            bloom_history=bloom_history
+            created_at=annotation_date or current_time
         )
+
+        # Preserve source_index from LLM node (used for batch processing)
+        if hasattr(llm_node, 'source_index') and llm_node.source_index is not None:
+            node.source_index = llm_node.source_index  # type: ignore
+
+        return node
 
     async def ingest_batch_unstructured_data_to_graph(self, data_items: List[UnstructuredData]):
         """
@@ -419,24 +736,6 @@ class GraphConstructor:
 
             # Initialize temporal fields
             current_time = datetime.utcnow()
-            bloom_level = getattr(node, 'bloom_level', '')
-
-            # Create initial Bloom history entry if bloom_level is present
-            from persona.models.schema import BloomLevelUpdate
-            bloom_history = []
-            if bloom_level:
-                source_info = []
-                if highlight_ids:
-                    source_info.append(f"highlight_id:{highlight_ids[0]}")
-                elif book_ids:
-                    source_info.append(f"book_id:{book_ids[0]}")
-                source = ', '.join(source_info) if source_info else None
-
-                bloom_history.append(BloomLevelUpdate(
-                    level=bloom_level,
-                    timestamp=annotation_date or current_time,
-                    source=source
-                ))
 
             nodes.append(Node(
                 name=node.name,
@@ -446,123 +745,11 @@ class GraphConstructor:
                 highlight_id=getattr(node, 'highlight_id', []) or highlight_ids,
                 writing_id=getattr(node, 'writing_id', []) or writing_ids,
                 discipline=getattr(node, 'discipline', ''),
-                bloom_level=bloom_level,
                 confidence=getattr(node, 'confidence', 0.0),
-                created_at=annotation_date or current_time,
-                bloom_history=bloom_history
+                created_at=annotation_date or current_time
             ))
 
         return nodes
-
-    def map_source_indices_to_metadata(
-        self,
-        nodes: List[Node],
-        metadata_mapping: Dict[int, Dict[str, Any]]
-    ) -> Tuple[List[Node], Dict[str, int]]:
-        """
-        Map source_index from LLM response to actual metadata from original sources.
-
-        Args:
-            nodes: List of nodes with source_index from LLM
-            metadata_mapping: Dict mapping source index to original metadata
-
-        Returns:
-            Tuple of (validated_nodes, stats)
-            - validated_nodes: Nodes with metadata applied from source_index mapping
-            - stats: Dict with validation metrics (valid, missing_index, invalid_index)
-        """
-        from datetime import datetime
-
-        validated_nodes = []
-        stats = {"valid": 0, "missing_index": 0, "invalid_index": 0, "cross_source": 0}
-
-        for node in nodes:
-            source_idx = getattr(node, 'source_index', None)
-
-            # Handle missing source_index
-            if source_idx is None:
-                logger.warning(f"Node '{node.name}' missing source_index, assigning to first source")
-                stats["missing_index"] += 1
-                source_idx = 0 if 0 in metadata_mapping else None
-
-                if source_idx is None:
-                    logger.error(f"Node '{node.name}' missing source_index and no sources available, skipping")
-                    continue
-
-            # Handle single source_index
-            if isinstance(source_idx, int):
-                if source_idx not in metadata_mapping:
-                    logger.error(f"Node '{node.name}' has invalid source_index {source_idx}, skipping")
-                    stats["invalid_index"] += 1
-                    continue
-
-                # Apply metadata from source
-                metadata = metadata_mapping[source_idx]
-                node.book_id = [int(metadata['book_id'])] if 'book_id' in metadata else []
-                node.highlight_id = [int(metadata['highlight_id'])] if 'highlight_id' in metadata else []
-                node.writing_id = [int(metadata['writing_id'])] if 'writing_id' in metadata else []
-
-                # Update bloom history source if needed
-                if hasattr(node, 'bloom_history') and node.bloom_history:
-                    for bloom_update in node.bloom_history:
-                        if bloom_update.source is None:
-                            source_info = []
-                            if node.highlight_id:
-                                source_info.append(f"highlight_id:{node.highlight_id[0]}")
-                            elif node.book_id:
-                                source_info.append(f"book_id:{node.book_id[0]}")
-                            bloom_update.source = ', '.join(source_info) if source_info else None
-
-                stats["valid"] += 1
-
-            # Handle multi-source cross-concept (source_index is array)
-            elif isinstance(source_idx, list):
-                book_ids = []
-                highlight_ids = []
-                writing_ids = []
-
-                for idx in source_idx:
-                    if idx not in metadata_mapping:
-                        logger.warning(f"Node '{node.name}' has invalid source_index {idx} in list, skipping this index")
-                        continue
-
-                    metadata = metadata_mapping[idx]
-                    if 'book_id' in metadata:
-                        book_id = int(metadata['book_id'])
-                        if book_id not in book_ids:
-                            book_ids.append(book_id)
-                    if 'highlight_id' in metadata:
-                        highlight_id = int(metadata['highlight_id'])
-                        if highlight_id not in highlight_ids:
-                            highlight_ids.append(highlight_id)
-                    if 'writing_id' in metadata:
-                        writing_id = int(metadata['writing_id'])
-                        if writing_id not in writing_ids:
-                            writing_ids.append(writing_id)
-
-                if not (book_ids or highlight_ids or writing_ids):
-                    logger.error(f"Node '{node.name}' has all invalid source_indices {source_idx}, skipping")
-                    stats["invalid_index"] += 1
-                    continue
-
-                node.book_id = book_ids
-                node.highlight_id = highlight_ids
-                node.writing_id = writing_ids
-                stats["valid"] += 1
-                stats["cross_source"] += 1
-
-            validated_nodes.append(node)
-
-        # Log accuracy metrics
-        total = sum([stats["valid"], stats["missing_index"], stats["invalid_index"]])
-        accuracy = stats["valid"] / total if total > 0 else 0
-        logger.info(
-            f"Source index mapping: valid={stats['valid']}, missing={stats['missing_index']}, "
-            f"invalid={stats['invalid_index']}, cross_source={stats['cross_source']}, "
-            f"accuracy={accuracy:.1%}"
-        )
-
-        return validated_nodes, stats
 
     async def generate_relationships(self, nodes: List[Node], context_description: str = "") -> List[Relationship]:
         """
@@ -570,46 +757,18 @@ class GraphConstructor:
         Only creates relationships that are strongly justified.
         """
         graph_context = await self.get_relevant_graph_context(user_id=self.user_id, nodes=nodes)
-        # Convert schema nodes to LLM nodes
-        llm_nodes = [
-            LLMNode(
-                name=node.name,
-                type=node.type,
-                chunk_ids=node.chunk_ids,
-                book_id=node.book_id,
-                highlight_id=node.highlight_id,
-                writing_id=node.writing_id,
-                discipline=node.discipline,
-                bloom_level=node.bloom_level,
-                confidence=node.confidence
-            ) for node in nodes
-        ]
+        llm_nodes = self._schema_nodes_to_llm_nodes(nodes)
         llm_relationships, _ = await get_relationships(llm_nodes, graph_context)  # Ignore the ID mapping
-        # Convert LLM relationships to schema relationships
-        return [Relationship(source=rel.source, target=rel.target, relation=rel.relation) for rel in llm_relationships]
+        return self._llm_relationships_to_schema(llm_relationships)
 
     async def generate_cross_relationships(self, new_nodes: List[Node], existing_context: str) -> List[Relationship]:
         """
         Generate relationships between new and existing nodes.
         Only creates relationships when there's a strong, meaningful connection.
         """
-        # Convert schema nodes to LLM nodes
-        llm_nodes = [
-            LLMNode(
-                name=node.name,
-                type=node.type,
-                chunk_ids=node.chunk_ids,
-                book_id=node.book_id,
-                highlight_id=node.highlight_id,
-                writing_id=node.writing_id,
-                discipline=node.discipline,
-                bloom_level=node.bloom_level,
-                confidence=node.confidence
-            ) for node in new_nodes
-        ]
+        llm_nodes = self._schema_nodes_to_llm_nodes(new_nodes)
         llm_relationships, _ = await get_relationships(llm_nodes, existing_context)  # Ignore the ID mapping
-        # Convert LLM relationships to schema relationships
-        return [Relationship(source=rel.source, target=rel.target, relation=rel.relation) for rel in llm_relationships]
+        return self._llm_relationships_to_schema(llm_relationships)
 
     async def generate_book_scoped_relationships(self, new_nodes: List[Node], book_id: int) -> List[Relationship]:
         """
@@ -700,28 +859,6 @@ class GraphConstructor:
 
         return "\n".join(context_parts)
 
-    async def discover_new_relationships(self, new_context: str, existing_context: str) -> List[Relationship]:
-        """
-        Discover potential new relationships between existing nodes based on new context.
-        """
-        if self.graph_ops is None:
-            raise RuntimeError("GraphConstructor must be used as an async context manager")
-        
-        # Extract existing nodes from the context
-        existing_nodes = await self.graph_ops.get_all_nodes(self.user_id)
-        if not existing_nodes:
-            return []
-            
-        # Convert NodeModel instances to Node instances for the LLM
-        nodes_for_llm = [LLMNode(name=node.name, type="Unknown", chunk_ids=[], discipline="", bloom_level="", confidence=0.0, book_id=[], highlight_id=[], writing_id=[]) for node in existing_nodes]  # Add required type field
-        
-        # Use the new context to find new relationships
-        combined_context = f"New Information:\n{new_context}\n\nExisting Knowledge:\n{existing_context}"
-        llm_relationships, _ = await get_relationships(nodes_for_llm, combined_context)  # Ignore the ID mapping
-        
-        # Convert LLM relationships to schema relationships
-        return [Relationship(source=rel.source, target=rel.target, relation=rel.relation) for rel in llm_relationships]
-
     async def get_relevant_graph_context(self, user_id: str, nodes: List[Node], max_hops: int = 2) -> str:
         """
         Get relevant subgraph context for the given nodes.
@@ -729,34 +866,6 @@ class GraphConstructor:
         if self.graph_context_retriever is None:
             raise RuntimeError("GraphConstructor must be used as an async context manager")
         return await self.graph_context_retriever.get_relevant_graph_context(nodes=nodes, user_id=user_id, max_hops=max_hops)
-
-    async def _consolidate_duplicates_inline(self):
-        """
-        Automatically consolidate duplicate nodes after ingestion.
-        This runs inline as part of the ingestion process.
-        """
-        if self.graph_ops is None:
-            raise RuntimeError("GraphConstructor must be used as an async context manager")
-            
-        try:
-            logger.info("Running automatic duplicate consolidation...")
-
-            report = await self.graph_ops.deduplicator.consolidate_duplicate_nodes(
-                user_id=self.user_id,
-                dry_run=False  # Actually consolidate
-            )
-
-            if report["duplicate_clusters"]:
-                logger.info(
-                    f"Consolidated {report['nodes_to_remove']} duplicate nodes "
-                    f"across {len(report['duplicate_clusters'])} clusters"
-                )
-            else:
-                logger.debug("No duplicate nodes found during consolidation")
-
-        except Exception as e:
-            # Don't fail the entire ingestion if consolidation has issues
-            logger.warning(f"Duplicate consolidation failed (non-fatal): {e}")
 
     async def close(self):
         await self.__aexit__(None, None, None)

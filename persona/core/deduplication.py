@@ -5,6 +5,12 @@ This module provides tools to:
 1. Check for semantic duplicates before creating nodes
 2. Consolidate existing duplicate nodes
 3. Merge relationships from duplicates to canonical nodes
+
+IMPORTANT EXCEPTION:
+CognitiveLevel nodes are intentionally excluded from deduplication in graph_ops.py.
+Each Concept should have its own dedicated CognitiveLevel node(s) to track cognitive
+progression over time. Multiple CognitiveLevel nodes with the same name (e.g., "Evaluate")
+can coexist, each connected to a different Concept.
 """
 
 from typing import List, Dict, Any, Optional, Tuple, Set
@@ -218,9 +224,13 @@ class NodeDeduplicator:
         # Get all nodes for the user
         all_nodes = await self.neo4j_manager.get_all_nodes(user_id)
 
-        # Filter by type if specified
+        # Filter by type if specified, otherwise exclude CognitiveLevel nodes
         if type_filter:
             all_nodes = [n for n in all_nodes if n.get("type") == type_filter]
+        else:
+            # ALWAYS exclude CognitiveLevel from consolidation - they should have duplicates
+            all_nodes = [n for n in all_nodes if n.get("type") != "CognitiveLevel"]
+            logger.info("Excluding CognitiveLevel nodes from consolidation (they intentionally have duplicates)")
 
         logger.info(f"Analyzing {len(all_nodes)} nodes for duplicates")
 

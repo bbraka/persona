@@ -142,17 +142,8 @@ GET_NODES = """
 You are an assistant that extracts structured knowledge from text to build a Personal Knowledge Graph (PKG).
 Your task is to identify key entities and concepts from the provided text (book highlights, notes, conversations, writing projects, etc.) and return them as JSON nodes.
 Each node should represent a reusable concept that can connect across different sources and contexts.
-IMPORTANT: You must respond with valid JSON format only.
 
-⚠️ CRITICAL: chunk_ids VALIDATION RULE ⚠️
-Before including ANY chunk_ids field, you MUST verify each UUID is in valid format:
-- VALID: ["67a60841-5373-48c6-83f8-83b6ec784372"] (array of UUIDs in 8-4-4-4-12 hexadecimal with hyphens)
-- INVALID: ["80075"], ["80078"], ["12345"], ["abc"] (plain numbers or text)
-If the provided chunk_ids contain NON-UUID values → OMIT the chunk_ids field entirely from that node.
-Only valid UUIDs with the pattern "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" are accepted.
-
-NOTE: Output chunk_ids as an array of UUID strings. Multiple sources can be tracked per node.
-If a node is extracted from a specific book section, include the chunk UUID in the array.
+**IMPORTANT**: You must respond with valid JSON format only.
 
 These nodes should represent TRANSFERABLE KNOWLEDGE - concepts, principles, patterns, and insights that can:
 - Connect across different sources and contexts
@@ -162,128 +153,209 @@ These nodes should represent TRANSFERABLE KNOWLEDGE - concepts, principles, patt
 
 The nodes will be indexed in a knowledge graph and vector database hybrid system that represents the user's evolving understanding of the world.
 
-Principles for Node Extraction:
+## Core Principles
 
-⚠️ CRITICAL: Node Names Must Be Nouns
+**1. Node Names Must Be Nouns**
 - Node names should be nouns or noun phrases that represent entities or concepts
-- If you see relationship words ('versus', 'and', 'between', 'from', 'with'), ask yourself:
-  * Is this a UNIVERSAL CONCEPT, or archetype, or title, or phrase? (e.g., "Good vs Evil", "Mother and Child", "Hero's Journey", "Kramer vs Kramer", "Johnson vs USA", "Polly wants a cracker") → Single node
-  * Is this comparing SPECIFIC INSTANCES? (e.g., "Libertarianism versus Classical liberalism", "Apple versus Samsung", "Harry likes apples") → Split into separate nodes with relationship
+- If you see relationship words ('versus', 'and', 'between'), ask yourself:
+  * Is this a UNIVERSAL CONCEPT? (e.g., "Good vs Evil", "David versus Goliath") → Single node
+  * Is this comparing SPECIFIC INSTANCES? (e.g., "Libertarianism versus Classical liberalism") → Split into separate nodes with relationship
 - Examples:
-  * ✓ CORRECT: "Libertarianism" (node), "Classical liberalism" (node), relationship: CONTRASTS_WITH
-  * ✗ WRONG: "Libertarianism versus Classical liberalism" (single node with verb)
+  * ✓ CORRECT: "Libertarianism" + "Classical liberalism" (separate nodes) with CONTRASTS_WITH relationship
+  * ✗ WRONG: "Libertarianism versus Classical liberalism" (single node containing comparison)
   * ✓ CORRECT: "Good versus Evil" (single node - universal philosophical concept)
-  * ✓ CORRECT: "David versus Goliath" (single node - archetypal narrative pattern)
 
-⚠️ CRITICAL: Conservative Node Creation
+**2. Quality Over Quantity**
 - Aim for 3-5 well-connected, reusable nodes rather than 10 disconnected ones
-- Create nodes that can connect across different contexts and sources
-- Prefer fewer rich nodes with multiple relationships over many isolated nodes
-- Quality over quantity: Each node should be meaningful and reusable
-
-INCLUDE exactly these fields per node:
-- name: Concise, generalizable concept (3-8 words) that represents transferable knowledge, not narrative specifics.
-- type: One of: Identity · Memory · Preference · Trait · Narrative · Goal · Event · State · Relationship · Belief · Other types shared below.
-- chunk_ids: OPTIONAL - ONLY include if EXPLICITLY provided in the input content in VALID UUID format array.
-  * CRITICAL: chunk_ids MUST be an array of valid UUIDs in the format ["xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"] where x is a hexadecimal digit (0-9, a-f)
-  * VALID UUID example: ["550e8400-e29b-41d4-a716-446655440000"] (array with 8-4-4-4-12 hexadecimal characters separated by hyphens)
-  * INVALID examples: ["80075"] (plain number), ["12345"] (not UUID format), ["abc-def"] (not proper UUID structure)
-  * CRITICAL: Copy the EXACT UUID strings from the input - do not modify, truncate, or reformat them
-  * CRITICAL: If you see "chunk_ids: [VALUES]" in the input, verify each value matches UUID format (8-4-4-4-12 pattern) before including it
-  * If ANY provided value is NOT a valid UUID format, OMIT the chunk_ids field entirely
-  * DO NOT infer, generate, or assume chunk_ids values
-  * Used to link concepts back to specific book content sections in an external system
-  * For notes, chat messages, or writing projects: OMIT this field entirely
-  * NEVER use page numbers, chapter numbers, or plain numbers as chunk_ids
-- discipline: REQUIRED field indicating the academic/knowledge domain this node belongs to. Examples:
-  * Academic domains: "Psychology", "Computer Science", "History", "Biology", "Philosophy", "Economics", "Physics", "Literature"
-  * Life domains: "Career", "Health", "Relationships", "Hobbies", "Finance", "Education", "Personal Development"
-  * If unclear or general, use "General" or the most appropriate broad category
-- bloom_level: REQUIRED cognitive level based on Bloom's taxonomy - SET CONSERVATIVELY using your knowledge to VALIDATE accuracy:
-
-  ASSESSMENT RULES (Use your knowledge to verify correctness):
-
-  * "Remember" - DEFAULT. Use when:
-    - User is passively reading/highlighting
-    - User mentions concept but shows no understanding
-    - User's explanation is INCORRECT or CONFUSED (even if they wrote something)
-    - No evidence of cognitive work beyond recognition
-
-  * "Understand" - Use ONLY if:
-    - User paraphrases or explains in their own words, AND
-    - The explanation is FACTUALLY CORRECT (validate against your knowledge)
-    - User compares/contrasts accurately with other concepts
-    - Shows comprehension, not just repetition
-    - If explanation has significant ERRORS → downgrade to "Remember"
-
-  * "Apply" - Use ONLY if:
-    - User describes using knowledge to solve a problem, AND
-    - The application is CORRECT and appropriate
-    - User demonstrates proper use in a new context
-    - If misapplied or incorrect usage → max "Understand" or "Remember"
-
-  * "Analyze" - Use ONLY if:
-    - User breaks down concept into components, AND
-    - The analysis is LOGICALLY SOUND and accurate
-    - User identifies patterns or distinguishes parts correctly
-    - If analysis is flawed or confused → downgrade accordingly
-
-  * "Evaluate" - Use ONLY if:
-    - User makes informed judgments with VALID criteria
-    - Critique is reasoned and demonstrates deep understanding
-    - Not just opinions - must show evaluative thinking
-    - If judgment is unfounded or illogical → downgrade
-
-  * "Create" - Use ONLY if:
-    - User synthesizes to produce genuinely NEW insights
-    - Creation is coherent and demonstrates mastery
-    - Not just recombination - must show innovation
-
-  CRITICAL VALIDATION STEP:
-  Before assigning Understand or higher, ask yourself:
-  1. "Is what the user wrote/said CORRECT according to my knowledge?"
-  2. "Does this demonstrate actual cognitive work, or just exposure?"
-  3. "If this were on an exam, would it receive credit?"
-
-  If the answer to #1 is NO → assign "Remember" (encountered but misunderstood)
-  If the answer to #2 is "just exposure" → assign "Remember"
-  If the answer to #3 is NO → assign maximum "Remember" or "Understand" (partial credit)
-
-  IMPORTANT: Most nodes from passive reading should be "Remember". Higher levels require DEMONSTRATED and CORRECT cognitive work.
-- confidence: REQUIRED extraction quality score (0.0 to 1.0):
-  * 1.0 = Explicit, direct statement with complete clarity
-  * 0.8-0.9 = Clear implication with strong supporting context
-  * 0.6-0.7 = Reasonable inference from available information
-  * 0.4-0.5 = Weak signal or ambiguous data
-  * Below 0.4 = Too speculative, avoid creating node
-- source_index: REQUIRED for batch processing, OMIT for single-source input. Indicates which source(s) the node came from.
-  * When input contains multiple sources formatted as "Source [0]:", "Source [1]:", etc., include this field
-  * Can be single integer (e.g., 0) or array for cross-source concepts (e.g., [0, 2])
-  * Valid range: 0 to N-1 where N is the number of sources
-  * Example: If Source [0] contains "concept X" and Source [1] contains "concept Y":
-    - Node "concept X" → source_index: 0
-    - Node "concept Y" → source_index: 1
-    - Node spanning both → source_index: [0, 1]
-- book_id: OPTIONAL - Array of book IDs (e.g., [27]). ONLY include if explicitly provided in source metadata.
-- highlight_id: OPTIONAL - Array of highlight IDs (e.g., [456, 789]). ONLY include if explicitly provided in source metadata.
-- writing_id: OPTIONAL - Array of writing IDs (e.g., [789]). ONLY include if explicitly provided in source metadata.
-  * NOTE: For batch processing, source_index will be used to map nodes to their source metadata. Do NOT manually extract book_id/highlight_id/writing_id from batch metadata.
-
-What to Extract - CREATE SEPARATE NODES FOR EACH ENTITY:
-
-⚠️ CONSERVATIVE EXTRACTION: Quality over quantity
-- Extract 3-5 well-connected, reusable concepts rather than 10+ disconnected ones
-- Each node should connect across contexts and sources
+- Each node should connect across contexts and be meaningful for the knowledge graph
 - Prioritize concepts that will have multiple relationships
 
-⚠️ MANDATORY NODE EXTRACTION OF USER NOTES/COMMENTS: Always extract user insights - 1 node per highlight, 1 node per note
-- User notes are AS IMPORTANT as highlighted text - extract both as separate nodes
-- Apply same entity IDs (book_id, highlight_id) to both highlight concepts and user notes
-- Validate correctness before assigning higher Bloom levels
-- For reading progress updates: ALWAYS extract as "ReadingProgress" type node with page/chapter info
-- User notes should have type "UserNote", "PersonalReflection", or "Insight" depending on content
+## Required Fields Per Node
 
-⚠️ CRITICAL: PERSON NODE EXTRACTION - HIGHEST PRIORITY:
+- **name**: Concise, generalizable concept (3-8 words) representing transferable knowledge
+- **type**: One of: Identity · Memory · Preference · Trait · Narrative · Goal · Event · State · Relationship · Belief · Term · Other types shared below
+- **chunk_ids**: OPTIONAL - Array of UUIDs linking to specific book content sections
+  * ONLY include if EXPLICITLY provided in input AND in valid UUID format
+  * VALID format: ["550e8400-e29b-41d4-a716-446655440000"] (8-4-4-4-12 hexadecimal pattern with hyphens)
+  * INVALID: ["80075"], ["12345"], ["abc-def"] (plain numbers or malformed strings)
+  * Copy EXACT UUID strings from input - do not modify or reformat
+  * If ANY value is NOT a valid UUID → OMIT the chunk_ids field entirely
+  * For notes, chat messages, or writing projects → OMIT this field
+  * NEVER use page numbers or plain numbers as chunk_ids
+- **discipline**: REQUIRED - Academic/knowledge domain (e.g., "Psychology", "Economics", "History", "Career", "Health")
+  * If unclear, use "General" or the most appropriate broad category
+- **confidence**: REQUIRED - Extraction quality score (0.0 to 1.0)
+  * 1.0 = Explicit, direct statement with complete clarity
+  * 0.8-0.9 = Clear implication with strong context
+  * 0.6-0.7 = Reasonable inference
+  * 0.4-0.5 = Weak signal or ambiguous
+  * Below 0.4 = Too speculative, avoid creating node
+- **source_index**: REQUIRED for batch, OMIT for single-source
+  * When input has "Source [0]:", "Source [1]:" format, include this field
+  * Can be integer (0) or array for cross-source concepts ([0, 2])
+  * Valid range: 0 to N-1 where N is number of sources
+- **book_id**, **highlight_id**, **writing_id**: OPTIONAL arrays (e.g., [27])
+  * ONLY include if explicitly provided in source metadata
+  * For batch processing, source_index handles mapping - don't manually extract these
+
+## What to Extract
+
+### PRIMARY PATTERN: 4-Node Extraction for Highlights/Notes
+
+When ingesting a highlight with a user note, you MUST create exactly 4 interconnected nodes:
+
+1. **Highlight Node** (type: "Highlight")
+   - Name: The highlighted text itself or a concise representation
+   - Contains the actual highlighted content from the book/article
+
+2. **UserNote Node** (type: "UserNote")
+   - Name: The user's comment/annotation on the highlight
+   - Contains the user's personal reflection, thought, or note
+
+3. **Concept Node** (type: "Concept")
+   - Name: A synthesized FULL SENTENCE combining highlight + note + surrounding context
+   - This is the KEY NODE - a complete, standalone statement that captures the knowledge
+   - Example: Highlight "Frank Knight, Henry Simons" + Note "Milton Friedman's advisors" → Concept "Frank Knight and Henry Simons were Milton Friedman's advisors"
+   - Must be grammatically complete and make sense on its own
+   - **IMPORTANT**: Concepts are ALWAYS full sentences or definitions, NOT single words or short phrases
+   - Single words/phrases should be extracted as "Term" nodes (see below)
+
+4. **CognitiveLevel Node** (type: "CognitiveLevel")
+   - Name: MUST be one of these exact enum values: "Remember", "Understand", "Apply", "Analyze", "Evaluate", "Create"
+   - This represents the user's cognitive understanding level for the Concept node
+   - NOTE: Higher levels mean demonstrated ability, NOT necessarily correctness
+   - **IMPORTANT**: Each Concept MUST have its own dedicated CognitiveLevel node
+   - NEVER reuse or share CognitiveLevel nodes between different Concepts
+
+### Cognitive Level Assessment Guide
+
+**Base your assessment on the Concept node content** - what depth of understanding does the extracted Concept demonstrate?
+Look at how the user engaged with the material in their highlight + note combination.
+
+* "Remember" - DEFAULT for passive reading:
+  - Concept is just factual recall or recognition (e.g., "X is Y")
+  - Simple definition or statement without elaboration
+  - User passively highlighted without adding interpretation
+  - Example: "Milton Friedman was an economist"
+
+* "Understand" - Concept shows comprehension:
+  - Concept includes explanation, paraphrasing, or comparison
+  - User demonstrates understanding in their own words
+  - Concept shows meaning-making beyond raw facts
+  - Example: "Milton Friedman believed free markets self-regulate better than government intervention"
+
+* "Apply" - Concept shows practical application:
+  - Concept describes using knowledge in a specific context
+  - User demonstrates application to solve a problem
+  - Shows transfer to new situations or practical usage
+  - Example: "I used Friedman's monetary theory to analyze the 2008 financial crisis"
+
+* "Analyze" - Concept involves analytical thinking:
+  - Concept breaks down components, examines patterns
+  - User distinguishes parts and relationships
+  - Shows decomposition or systematic examination
+  - Example: "Friedman's theory has three core assumptions: rational actors, perfect information, and no externalities"
+
+* "Evaluate" - Concept includes judgment:
+  - Concept critiques, assesses, or judges ideas
+  - User makes informed judgments with criteria
+  - Shows critical evaluation or weighing of merits
+  - Example: "While Friedman's free market theory works in stable economies, it fails to account for systemic crises"
+
+* "Create" - Concept synthesizes new ideas:
+  - Concept combines ideas to produce new insights
+  - User creates original connections or interpretations
+  - Shows creative synthesis or novel perspective
+  - Example: "By combining Friedman's monetary theory with Keynesian fiscal policy, we can create a hybrid crisis response framework"
+
+**Assessment Guidelines**:
+1. Assess based on what the user DEMONSTRATES in the Concept, not on correctness
+2. Look at the COMBINED information (Highlight + UserNote) that forms the Concept
+3. Higher cognitive levels require explicit evidence - don't over-estimate
+4. When in doubt, default to a lower level (Remember or Understand)
+
+### Examples
+
+**EXAMPLE 1 - Remember Level:**
+Input: Highlight "Frank Knight, Henry Simons" + Note "Milton Friedman's advisors"
+
+Cognitive Assessment:
+- Concept formed: "Frank Knight and Henry Simons were Milton Friedman's advisors"
+- This is simple factual recall - the user is just noting who the advisors were
+- No explanation, analysis, or application demonstrated
+- **CognitiveLevel: "Remember"**
+
+Output nodes:
+1. {"name": "Frank Knight, Henry Simons", "type": "Highlight", "properties": {"discipline": "Economics"}, ...}
+2. {"name": "Milton Friedman's advisors", "type": "UserNote", "properties": {"discipline": "Economics"}, ...}
+3. {"name": "Frank Knight and Henry Simons were Milton Friedman's advisors", "type": "Concept", "properties": {"discipline": "Economics"}, ...}
+4. {"name": "Remember", "type": "CognitiveLevel", "properties": {"discipline": "Education"}, ...}
+
+**EXAMPLE 2 - Evaluate Level:**
+Input: Highlight "Free market capitalism" + Note "Works best when information is symmetric and transaction costs are low, but fails during crises when these assumptions break down"
+
+Cognitive Assessment:
+- Concept formed: "Free market capitalism works best with symmetric information and low transaction costs, but fails when these conditions don't hold"
+- User is making a critical judgment about when the theory works vs. fails
+- Shows evaluation with specific criteria (information symmetry, transaction costs)
+- **CognitiveLevel: "Evaluate"**
+
+Output nodes:
+1. {"name": "Free market capitalism", "type": "Highlight", ...}
+2. {"name": "Works best when information is symmetric...", "type": "UserNote", ...}
+3. {"name": "Free market capitalism works best with symmetric information and low transaction costs, but fails when these conditions don't hold", "type": "Concept", ...}
+4. {"name": "Evaluate", "type": "CognitiveLevel", ...}
+
+These 4 nodes will be connected via relationships (see GET_RELATIONSHIPS for details).
+
+### IMPORTANT: Term vs Theme vs Concept Distinction
+
+**Term nodes** (type: "Term"):
+- Single words or short phrases (1-3 words) that reference specific things, ideas, or names
+- Keywords, jargon, terminology, proper nouns, technical terms
+- Examples: "Objectivism", "Free market", "Utilitarianism", "Blockchain", "Neural networks"
+- Use Term when: The node is a label, name, or keyword rather than a complete thought
+- **Terms do NOT get CognitiveLevel nodes** - they are reference points, not learned concepts
+
+**Theme nodes** (type: "Theme"):
+- Medium-length phrases (4-10 words) that represent topics, subjects, or themes but are NOT complete sentences
+- Topical concepts from reading progress, chapter themes, or subject matter
+- Examples:
+  * "Loss of intellectual mentor and self-reinvention"
+  * "Transformation through suffering"
+  * "Professional jealousy and self-image"
+  * "Alliances with conservative figures"
+  * "Shift toward Aristotelian reason"
+- Use Theme when: The node is a topic or subject phrase but not a grammatically complete statement
+- **Themes do NOT get CognitiveLevel nodes** - they are subjects/topics, not learned concepts with depth
+- Themes can be RELATED TO Concepts, but are not Concepts themselves
+
+**Concept nodes** (type: "Concept"):
+- MUST be complete sentences or definitions (typically 8+ words with subject + verb + object/complement)
+- Grammatically complete statements that express understanding, explanations, or principles
+- Examples:
+  * "Objectivism holds that rational self-interest is the basis of morality"
+  * "Free market capitalism relies on supply and demand to set prices"
+  * "Neural networks learn by adjusting weights through backpropagation"
+  * "Professional jealousy arises when someone's success threatens our self-image"
+  * "Loss of a mentor forces individuals to develop independent thinking"
+- Use Concept when: The node expresses a complete idea, definition, or understanding as a full sentence
+- **Concepts MUST have CognitiveLevel nodes** - they represent learned knowledge with depth
+
+**Quick Test**:
+- Can it be a Wikipedia article title? → Term
+- Is it a topic/subject phrase but not a complete sentence? → Theme
+- Is it a complete sentence from the article? → Concept
+
+**Examples**:
+- ❌ WRONG: "Objectivism" (type: "Concept") with CognitiveLevel
+- ❌ WRONG: "Loss of intellectual mentor" (type: "Concept") with CognitiveLevel
+- ✅ CORRECT: "Objectivism" (type: "Term") - no CognitiveLevel
+- ✅ CORRECT: "Loss of intellectual mentor and self-reinvention" (type: "Theme") - no CognitiveLevel
+- ✅ CORRECT: "Objectivism is Ayn Rand's philosophy based on rational self-interest" (type: "Concept") with CognitiveLevel
+- ✅ CORRECT: "Loss of a mentor forces individuals to develop independent thinking and self-reliance" (type: "Concept") with CognitiveLevel
+
+### SECONDARY PATTERN: Person Node Extraction
 When you see ANY reference to a person (author, philosopher, scientist, historical figure):
 1. EXTRACT A PERSON NODE using their FULL NAME (e.g., "Ayn Rand", "Albert Einstein", "Karl Marx")
 2. Use node type "Person" (NOT Author/Philosopher/Scientist)
@@ -316,20 +388,25 @@ B. **Character Nodes** (one node per significant character):
 C. **Location Nodes** (if significant):
    - "Marseilles", "Château d'If", "Paris" (type: "Location", discipline: "Geography")
 
-D. **Transferable Concept Nodes**:
-   - "Betrayal by trusted colleagues" (type: "Concept", discipline: "Psychology")
-   - "Professional jealousy" (type: "Concept", discipline: "Psychology")
-   - "Justice versus revenge" (type: "Concept", discipline: "Philosophy")
-   - "Hope sustains through suffering" (type: "Insight", discipline: "Philosophy")
-   - "Isolation transforms personality" (type: "Pattern", discipline: "Psychology")
-   - "Power corrupts" (type: "Principle", discipline: "Philosophy")
+D. **Term Nodes** (keywords and terminology):
+   - "Betrayal", "Justice", "Revenge", "Isolation" (type: "Term", discipline varies)
+   - "Utilitarianism", "Capitalism", "Democracy" (type: "Term", discipline: "Philosophy/Politics")
+   - These are reference points without cognitive levels
 
-E. **Symbol/Theme/Archetype Nodes**:
+E. **Concept Nodes** (full understanding statements):
+   - "Betrayal by trusted colleagues causes deeper psychological harm than betrayal by strangers" (type: "Concept", discipline: "Psychology")
+   - "Professional jealousy arises when someone's success threatens our self-image" (type: "Concept", discipline: "Psychology")
+   - "Justice seeks to restore balance while revenge seeks to inflict pain" (type: "Concept", discipline: "Philosophy")
+   - "Hope sustains people through suffering by providing meaning and future orientation" (type: "Concept", discipline: "Psychology")
+   - "Prolonged isolation transforms personality by eliminating social feedback loops" (type: "Concept", discipline: "Psychology")
+   - These express complete understanding and require cognitive levels
+
+F. **Symbol/Theme/Archetype Nodes**:
    - "The wronged innocent" (type: "Archetype", discipline: "Literature")
    - "The mentor figure" (type: "Archetype", discipline: "Literature")
    - "Transformation through suffering" (type: "Theme", discipline: "Literature")
 
-F. **Event Nodes** (if culturally/historically significant):
+G. **Event Nodes** (if culturally/historically significant):
    - "Dantès' imprisonment" (type: "Event", discipline: "Literature")
    - "The Trojan War" (type: "Event", discipline: "History")
 
@@ -352,17 +429,11 @@ FOR PERSONAL USER DATA:
    - Relationship: Important people or places ("Has younger sister named Alice")
    - Belief: Personal values ("Technology should serve human connection")
 
-Guidelines for Node Creation:
-   - **For books/content**: Prioritize TRANSFERABLE CONCEPTS over plot details. Include major characters/events only if culturally significant.
-   - **Avoid verb-based node names**: If comparing/contrasting concepts, create separate nodes with relationships UNLESS it's a universal archetype (e.g., "David versus Goliath" = archetype, but "Hayek versus Keynes" = two economist nodes with CONTRASTS_WITH relationship).
-   - **chunk_ids usage - STRICT VALIDATION REQUIRED**:
-     * ONLY include chunk_ids if you see VALID UUIDs in the input (format: ["xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"])
-     * Before including chunk_ids, verify EACH value has exactly 5 groups of hexadecimal characters: 8-4-4-4-12 digits separated by hyphens
-     * Valid: ["67a60841-5373-48c6-83f8-83b6ec784372"], ["550e8400-e29b-41d4-a716-446655440000"]
-     * Invalid: ["80075"], ["80078"], ["12345"], ["abc"], ["chunk_123"] - REJECT these and OMIT chunk_ids field
-     * If the input provides ANY non-UUID value (like a plain number), DO NOT include chunk_ids at all
-     * Copy the exact UUID strings character-by-character from the input without any modifications
-   - **For user data**: Extract personal specifics that define the individual. NEVER include chunk_ids for personal data.
+### Additional Node Types
+
+**For books/content**: Prioritize TRANSFERABLE CONCEPTS over plot details. Include major characters/events only if culturally significant.
+
+**For user data**: Extract personal specifics that define the individual. NEVER include chunk_ids for personal data.
    - **For notes/chat/writing projects**: NEVER include chunk_ids - these are not tied to book chunks.
    - Ask: "Can this node connect to knowledge from other sources?" If yes, it's well-abstracted.
    - Characters/events qualify if they're references people use in conversation ("That's so Gatsby" or "Orwellian surveillance")
@@ -388,36 +459,32 @@ NOTE: chunk_ids VALIDATION REQUIRED
       "name": "The Count of Monte Cristo",
       "type": "Book",
       "discipline": "Literature",
-      "bloom_level": "Remember",
       "confidence": 1.0,
       "properties": {"publication_year": "1844"}
     },
     {
       "name": "Alexandre Dumas",
-      "type": "Author",
+      "type": "Person",
       "discipline": "Literature",
-      "bloom_level": "Remember",
-      "confidence": 1.0
+      "confidence": 1.0,
+      "properties": {"role": "Author"}
     },
     {
       "name": "Adventure",
       "type": "Genre",
       "discipline": "Literature",
-      "bloom_level": "Remember",
       "confidence": 1.0
     },
     {
       "name": "Historical Fiction",
       "type": "Genre",
       "discipline": "Literature",
-      "bloom_level": "Remember",
       "confidence": 1.0
     },
     {
       "name": "Edmond Dantès",
       "type": "Character",
       "discipline": "Literature",
-      "bloom_level": "Remember",
       "confidence": 1.0,
       "properties": {"role": "protagonist", "traits": "naive turned vengeful"}
     },
@@ -425,7 +492,6 @@ NOTE: chunk_ids VALIDATION REQUIRED
       "name": "Danglars",
       "type": "Character",
       "discipline": "Literature",
-      "bloom_level": "Remember",
       "confidence": 1.0,
       "properties": {"role": "antagonist", "traits": "envious, greedy"}
     },
@@ -433,7 +499,6 @@ NOTE: chunk_ids VALIDATION REQUIRED
       "name": "Marseilles",
       "type": "Location",
       "discipline": "Geography",
-      "bloom_level": "Remember",
       "confidence": 1.0
     },
     {
@@ -441,32 +506,16 @@ NOTE: chunk_ids VALIDATION REQUIRED
       "type": "Concept",
       "chunk_ids": ["550e8400-e29b-41d4-a716-446655440000"],
       "book_id": [27],
-      "highlight_id": [],
+      "highlight_id": [456],
       "writing_id": [],
       "discipline": "Psychology",
-      "bloom_level": "Understand",
       "confidence": 0.95
     },
     {
-      "name": "Justice versus revenge",
-      "type": "Concept",
-      "chunk_ids": ["550e8400-e29b-41d4-a716-446655440000"],
-      "book_id": [27],
-      "highlight_id": [456, 789],
-      "writing_id": [],
-      "discipline": "Philosophy",
-      "bloom_level": "Evaluate",
-      "confidence": 0.9
-    },
-    {
-      "name": "Isolation transforms personality",
-      "type": "Pattern",
-      "book_id": [27],
-      "highlight_id": [],
-      "writing_id": [],
-      "discipline": "Psychology",
-      "bloom_level": "Analyze",
-      "confidence": 0.85
+      "name": "Understand",
+      "type": "CognitiveLevel",
+      "discipline": "Education",
+      "confidence": 1.0
     }
   ]
 }
@@ -490,28 +539,24 @@ Example Response Format for USER DATA (NOTE: No chunk_ids for personal data):
       "name": "Born in 1990 in Seattle",
       "type": "Identity",
       "discipline": "Personal History",
-      "bloom_level": "Remember",
       "confidence": 1.0
     },
     {
       "name": "Prefers working in solitude before dawn",
       "type": "Preference",
       "discipline": "Work Habits",
-      "bloom_level": "Understand",
       "confidence": 0.9
     },
     {
       "name": "Technology should serve human connection",
       "type": "Belief",
       "discipline": "Philosophy",
-      "bloom_level": "Evaluate",
       "confidence": 0.95
     },
     {
       "name": "Training for marathon next spring",
       "type": "Goal",
       "discipline": "Health",
-      "bloom_level": "Apply",
       "confidence": 1.0
     }
   ]
@@ -544,45 +589,49 @@ Guidelines for Creating Relationships:
    B. Semantic Relationships (Knowledge Structure):
       - SIMILAR_TO: Concepts share similar properties or meanings
       - CONTRASTS_WITH: Concepts are opposites or contradictory
-      - RELATED_TO: General semantic connection
+      - RELATED_TO: General semantic connection (USE LIBERALLY across all node types, especially Theme→Concept)
       - EXTENDS: One concept extends or builds upon another
       - SPECIALIZES: More specific instance of a general concept
-   
-   B. Hierarchical Relationships:
+      - ASSOCIATED_WITH: General association between any node types
+      - AROSE_FROM: Something originated from or emerged from another thing
+      - ELABORATES_ON: A more detailed explanation (especially Theme→Concept)
+
+   C. Hierarchical Relationships:
       - PARENT_OF / CHILD_OF: Hierarchical or categorical relationship
       - PART_OF / CONTAINS: Composition relationships
       - SUBTOPIC_OF: Knowledge hierarchy
-   
-   C. Argumentative Relationships:
+
+   D. Argumentative Relationships:
       - SUPPORTS: One concept provides evidence/support for another
       - OPPOSES / ARGUES_AGAINST: One concept contradicts or opposes another
       - EVIDENCES: Provides evidence for a claim
       - REFUTES: Disproves or contradicts
-   
-   D. Causal Relationships:
+
+   E. Causal Relationships:
       - LEADS_TO / CAUSES: Direct causation
       - RESULTS_IN: Outcome or consequence
       - ENABLES: Makes something possible
       - PREVENTS: Stops or blocks something
-   
-   E. Temporal Relationships:
+
+   F. Temporal Relationships:
       - PRECEDES / FOLLOWS: Time-based sequence
       - HAPPENS_BEFORE / HAPPENS_AFTER: Event ordering
-   
-   F. Influence & Impact:
+
+   G. Influence & Impact:
       - SHAPES / INFLUENCES: One affects the other
+      - INFLUENCED_BY: Was affected or shaped by another thing
       - INSPIRES: Motivational or creative influence
       - MOTIVATES: Drives action or decision
       - ENHANCES: Improves or amplifies
       - WEAKENS: Diminishes or reduces
-   
-   G. Cognitive & Personal:
+
+   H. Cognitive & Personal:
       - RESONATES_WITH: Emotional or intellectual alignment
       - CONFLICTS_WITH: Internal tension or contradiction
       - EVOLVES_INTO / TRANSFORMS_TO: Personal growth or change
       - APPLIES_TO: Practical application context
-   
-   H. Learning & Knowledge (PKG-specific):
+
+   I. Learning & Knowledge (PKG-specific):
       - PREREQUISITE_OF / BUILDS_ON: One concept must be understood before another
       - EXEMPLIFIES / INSTANTIATES: Concrete example of an abstract concept
       - DEFINES / CLARIFIES: One concept defines or explains another
@@ -590,13 +639,14 @@ Guidelines for Creating Relationships:
       - QUESTIONS / CHALLENGES: One concept raises questions about another
       - ANSWERS / RESOLVES: One concept provides answers to questions in another
       - SYNTHESIZES: Combines multiple concepts into new understanding
-      - ANNOTATES / COMMENTS_ON: Commentary or reflection on a concept
       - LEARNED_FROM: Knowledge source relationship
       - REINFORCES: Strengthens or supports existing knowledge
       - READING_AT: Reading progress node connected to book/chapter
       - ENCOUNTERED_IN: Concept/idea encountered while reading specific section
+      - ANNOTATED_WITH: Highlight node connected to UserNote node
+      - SYNTHESIZED_INTO: Highlight/UserNote connected to Concept node
 
-   I. Person & Attribution Relationships:
+   J. Person & Attribution Relationships:
       - CREATED_BY / AUTHORED_BY: Work created by person
       - ATTRIBUTED_TO: Idea or concept attributed to person (for possessive references like "Rand's philosophy")
       - ADVOCATED_BY: Person advocates or supports this concept
@@ -606,6 +656,8 @@ Guidelines for Creating Relationships:
       - HAS_ROLE: Person has a specific role (Author, Philosopher, etc.)
 
 2. Principles for Relationship Creation:
+   - **CRITICAL**: Every Theme node should connect to at least one Concept, Person, Event, or Location
+   - Theme nodes that ONLY connect to other Themes are a problem - they lack grounding
    - Only create relationships that are strongly justified
    - Focus on relationships that reveal meaningful patterns
    - Prefer direct connections over tenuous ones
@@ -613,13 +665,33 @@ Guidelines for Creating Relationships:
    - Look for relationships that help understand the user's journey
 
    SPECIAL CASES - ALWAYS CREATE THESE:
-   a) Reading Progress → Highlights/Notes:
+
+   a) **3-NODE PATTERN - HIGHEST PRIORITY**:
+      When you see Highlight, UserNote, and Concept nodes, create these relationships:
+      - Highlight ANNOTATED_WITH UserNote
+      - Highlight SYNTHESIZED_INTO Concept
+      - UserNote SYNTHESIZED_INTO Concept
+
+      Example with nodes:
+      - Node1: "Frank Knight, Henry Simons" (type: Highlight)
+      - Node2: "Milton Friedman's advisors" (type: UserNote)
+      - Node3: "Frank Knight and Henry Simons were Milton Friedman's advisors" (type: Concept)
+
+      Relationships:
+      - Node1 ANNOTATED_WITH Node2
+      - Node1 SYNTHESIZED_INTO Node3
+      - Node2 SYNTHESIZED_INTO Node3
+
+      NOTE: CognitiveLevel relationships (HAS_UNDERSTANDING_LEVEL) are created automatically by the system.
+      DO NOT create any relationships involving CognitiveLevel nodes.
+
+   b) Reading Progress → Highlights/Notes:
       - When a ReadingProgress node exists, connect it with READING_AT to the book
       - Connect any concepts from same page/chapter with ENCOUNTERED_IN to ReadingProgress
       - Example: "Page 47 of Atlas Shrugged" READING_AT "Atlas Shrugged"
       - Example: "Objectivism concept" ENCOUNTERED_IN "Page 47 of Atlas Shrugged"
 
-   b) Person Attribution - ALWAYS CREATE THESE PATTERNS:
+   c) Person Attribution - ALWAYS CREATE THESE PATTERNS:
       - When you see "Rand's philosophy" or possessive forms:
         * Extract Person node: "Ayn Rand"
         * Extract concept node: "Rand's philosophy" or "Objectivism"
@@ -631,11 +703,65 @@ Guidelines for Creating Relationships:
         * Relationship: concept ATTRIBUTED_TO "Ayn Rand"
       - CRITICAL: The Person node with FULL NAME must ALWAYS be created when any person is mentioned
 
-   c) Connect to Existing Person Nodes:
+   d) Connect to Existing Person Nodes:
       - BEFORE creating a new Person node, check if that person already exists in the graph context
       - If "Ayn Rand" exists in the graph, use that exact name for relationships
       - If you see duplicate person nodes (e.g., "Ayn Rand" as Author and as Philosopher), treat them as the SAME person
       - Always prefer connecting to an existing Person node over creating a new one
+
+   e) **Theme-Concept-Person-Event Connectivity - HIGHEST PRIORITY**:
+      Themes, Concepts, People, Events, and Locations should be RICHLY CONNECTED to each other.
+      These semantic connections are CRITICAL for building a meaningful knowledge graph.
+
+      **MANDATORY CHECK FOR THEME NODES**:
+      - Before creating any Theme→Theme relationship, FIRST check if that Theme can connect to a Concept
+      - Themes should connect to Concepts whenever possible (Themes are TOPICS, Concepts are EXPLANATIONS)
+      - Only create Theme→Theme if no relevant Concept exists
+      - A Theme with NO Concept connection is a missed opportunity!
+
+      **ALWAYS look for and create these relationships**:
+
+      1. Theme → Concept connections (**MOST IMPORTANT - CHECK FIRST**):
+         - When a Theme represents a topic and a Concept elaborates on that topic as a full sentence
+         - Use RELATED_TO, EXPLORES_THEME, EXEMPLIFIES, INSTANTIATES, or ELABORATES_ON
+         - **Search actively**: If you see Theme "Alliance with conservative networks", look for Concepts about alliances, conservatism, or networks
+         - Example: "Loss of intellectual mentor" (Theme) RELATED_TO "Loss of a mentor forces independent thinking" (Concept)
+         - Example: "Economic policy innovation" (Theme) RELATED_TO "Economic collapse leads to policy innovation" (Concept)
+         - Example: "Philosophical crusade" (Theme) ELABORATES_ON "Philosophy requires rational self-interest as its foundation" (Concept)
+         - Example: "Reorientation toward reason" (Theme) RELATED_TO "Reason is the foundation of human survival and flourishing" (Concept)
+
+      2. Theme → Person connections:
+         - When a Theme is associated with a person's work, life, or ideas
+         - Use RELATED_TO, ATTRIBUTED_TO, ASSOCIATED_WITH
+         - Example: "Self-reinvention after career shift" (Theme) RELATED_TO "Milton Friedman" (Person)
+         - Example: "Free market advocacy" (Theme) ATTRIBUTED_TO "Ayn Rand" (Person)
+
+      3. Theme → Event connections:
+         - When a Theme is related to a historical or significant event
+         - Use RELATED_TO, AROSE_FROM, INFLUENCED_BY
+         - Example: "Policy innovation" (Theme) AROSE_FROM "Great Depression" (Event)
+         - Example: "Economic nationalism" (Theme) INFLUENCED_BY "World War II" (Event)
+
+      4. Concept → Person connections:
+         - When a Concept is created by, advocated by, or attributed to a person
+         - Use CREATED_BY, ATTRIBUTED_TO, ADVOCATED_BY, CRITICIZED_BY
+         - Example: "Rational self-interest is the basis of morality" (Concept) ATTRIBUTED_TO "Ayn Rand" (Person)
+
+      5. Concept → Event connections:
+         - When a Concept relates to or arose from an event
+         - Use RELATED_TO, AROSE_FROM, APPLIES_TO, EXPLAINS
+         - Example: "Economic collapse leads to policy innovation" (Concept) EXPLAINS "Great Depression" (Event)
+
+      6. Cross-type semantic relationships:
+         - Look for ANY meaningful semantic connection between different node types
+         - Use RELATED_TO as a general connector when a more specific relationship isn't clear
+         - Example: "Chicago School" (Term) RELATED_TO "Milton Friedman" (Person)
+         - Example: "University of Chicago" (Location) ASSOCIATED_WITH "Chicago School" (Term)
+
+      **IMPORTANT**: Be LIBERAL with these cross-type connections. If two nodes seem related when reading
+      them together, CREATE THE RELATIONSHIP. It's better to have too many semantic connections than too few.
+      The goal is a DENSELY CONNECTED knowledge graph where ideas, people, places, themes, and events
+      are all interlinked.
 
 3. When to NOT Create Relationships:
    - When connections feel forced or superficial
@@ -672,6 +798,13 @@ CRITICAL REMINDERS:
 - Each relationship should reveal something important about the user
 - Consider the user's overall narrative when creating connections
 - Don't force relationships between every pair of nodes
+
+SELF-LOOP PREVENTION (CRITICAL):
+- NEVER create relationships where source_id equals target_id
+- A node CANNOT have a relationship with itself
+- Example of FORBIDDEN relationship: {"source_id": "Node1", "relation": "RELATES_TO", "target_id": "Node1"}
+- Before adding any relationship, verify source_id ≠ target_id
+- Self-loops are meaningless and will be rejected
 """
 
 GENERATE_COMMUNITIES = """

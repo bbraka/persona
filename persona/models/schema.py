@@ -12,14 +12,8 @@ class UnstructuredData(BaseModel):
     chunk_ids: Optional[List[str]] = Field(default_factory=list, description="Array of chunk IDs linking this data to source sections")
     metadata: Optional[Dict[str, str]] = {}
 
-class BloomLevelUpdate(BaseModel):
-    """Records a Bloom's taxonomy level change with timestamp"""
-    level: str = Field(..., description="The Bloom level (Remember, Understand, Apply, Analyze, Evaluate, Create)")
-    timestamp: datetime = Field(default_factory=datetime.utcnow, description="When this level was reached")
-    source: Optional[str] = Field(None, description="What triggered the update (e.g., 'highlight_id:123', 'writing_id:456')")
-
 class Node(BaseModel):
-    model_config = {"extra": "ignore"}  # Ignore extra fields
+    model_config = {"extra": "allow"}  # Allow extra fields like source_index for batch processing
 
     name: str = Field(..., description="The node content - can be a simple label (e.g., 'Techno Music') or a narrative fragment (e.g., 'Deeply moved by classical music in empty spaces')")
     type: str = Field(..., description="The type/category of the node (e.g., 'Identity', 'Belief', 'Preference', 'Goal', 'Event', 'Relationship', etc.)")
@@ -28,10 +22,8 @@ class Node(BaseModel):
     highlight_id: Optional[List[int]] = Field(default_factory=list, description="Array of highlight IDs this node is derived from")
     writing_id: Optional[List[int]] = Field(default_factory=list, description="Array of writing IDs this node is derived from")
     discipline: Optional[str] = Field(None, description="The discipline/category of the node (e.g., 'Music', 'Art', 'Technology', etc.)")
-    bloom_level: Optional[str] = Field(None, description="The current cognitive level of the node based on Bloom's taxonomy (e.g., 'Remember', 'Understand', 'Apply', 'Analyze', 'Evaluate', 'Create')")
     confidence: Optional[float] = Field(None, description="Confidence score for the node extraction (0.0 to 1.0)")
     created_at: Optional[datetime] = Field(None, description="When this concept was first learned/annotated (from metadata date or current time)")
-    bloom_history: Optional[List[BloomLevelUpdate]] = Field(default_factory=list, description="History of Bloom's taxonomy level progressions")
 
 class Relationship(BaseModel):
     source: str
@@ -48,7 +40,6 @@ class NodeModel(BaseModel):
     properties: Optional[Dict[str, Any]] = Field(default_factory=dict)
     embedding: Optional[List[float]] = Field(None, description="Embedding vector for the node, if applicable")
     created_at: Optional[str] = Field(None, description="ISO 8601 timestamp when concept was first learned")
-    bloom_history: Optional[List[Dict[str, Any]]] = Field(default_factory=list, description="History of Bloom level changes [{level, timestamp, source}]")
 
     class Config:
         json_schema_extra = {
@@ -59,13 +50,9 @@ class NodeModel(BaseModel):
                 "book_id": [27],
                 "highlight_id": [123, 456],
                 "writing_id": [],
-                "properties": {"discipline": "Lifestyle", "bloom_level": "Understand", "confidence": 0.85},
+                "properties": {"discipline": "Lifestyle", "confidence": 0.85},
                 "embedding": [0.1, 0.2, 0.3],
-                "created_at": "2025-02-24T10:30:00Z",
-                "bloom_history": [
-                    {"level": "Remember", "timestamp": "2025-02-24T10:30:00Z", "source": "highlight_id:123"},
-                    {"level": "Understand", "timestamp": "2025-02-26T15:45:00Z", "source": "highlight_id:456"}
-                ]
+                "created_at": "2025-02-24T10:30:00Z"
             }
         }
 
@@ -261,7 +248,6 @@ class CustomNodeData(BaseModel):
                 "chunk_ids": ["book_27_chapter_1", "book_27_chapter_5"],
                 "properties": {
                     "discipline": "Computer Science",
-                    "bloom_level": "Understand",
                     "confidence": "0.9"
                 },
                 "embedding": [0.1, 0.2, 0.3]
