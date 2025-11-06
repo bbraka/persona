@@ -208,6 +208,7 @@ class GraphUIService:
                n.highlight_id AS highlight_id,
                n.writing_id AS writing_id,
                n.created_at AS created_at,
+               n.concept_uuid AS concept_uuid,
                properties(n) AS properties
         ORDER BY n.name
         """
@@ -284,6 +285,7 @@ class GraphUIService:
                 props.pop("highlight_id", None)
                 props.pop("writing_id", None)
                 props.pop("created_at", None)
+                props.pop("concept_uuid", None)
                 props.pop("embedding", None)
 
                 nodes.append({
@@ -298,6 +300,7 @@ class GraphUIService:
                     "highlight_id": node.get("highlight_id", []),
                     "writing_id": node.get("writing_id", []),
                     "created_at": node.get("created_at"),
+                    "concept_uuid": node.get("concept_uuid"),
                     "properties": props
                 })
 
