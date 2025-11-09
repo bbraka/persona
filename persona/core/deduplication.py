@@ -39,18 +39,29 @@ class NodeDeduplicator:
     def _get_merge_threshold(
         self,
         new_discipline: Optional[str],
-        existing_discipline: Optional[str]
+        existing_discipline: Optional[str],
+        node_type: Optional[str] = None
     ) -> float:
         """
-        Determine merge threshold based on discipline compatibility.
+        Determine merge threshold based on discipline compatibility and node type.
 
         Args:
             new_discipline: Discipline of the new node
             existing_discipline: Discipline of the existing node
+            node_type: Type of the node (Theme, Concept, etc.)
 
         Returns:
             Similarity threshold to use for merge decision
         """
+        # Theme nodes get more liberal merging (consolidate similar themes)
+        if node_type == "Theme":
+            if new_discipline and existing_discipline:
+                if new_discipline == existing_discipline:
+                    return 0.70  # Liberal merging for Themes in same discipline
+                else:
+                    return 0.85  # Still liberal for cross-discipline Themes
+            return 0.75  # Default for Themes without discipline info
+
         # Same discipline or both missing discipline = default behavior
         if not new_discipline or not existing_discipline:
             return self.similarity_threshold  # 0.85 default
@@ -113,8 +124,11 @@ class NodeDeduplicator:
                 for result in same_book_results:
                     score = result.get("score", 0.0)
 
-                    # Lower threshold for same-book matches (0.75)
-                    if score >= 0.75:
+                    # Type-aware threshold for same-book matches
+                    # Themes: 0.65 (very liberal), Others: 0.75
+                    same_book_threshold = 0.65 if node_type == "Theme" else 0.75
+
+                    if score >= same_book_threshold:
                         node_data = await self.neo4j_manager.get_node_data(result["nodeName"], user_id)
 
                         # Type filter if provided
@@ -149,9 +163,9 @@ class NodeDeduplicator:
                 score = result.get("score", 0.0)
                 node_data = await self.neo4j_manager.get_node_data(result["nodeName"], user_id)
 
-                # Get discipline-aware threshold
+                # Get discipline-aware and type-aware threshold
                 existing_discipline = node_data.get("properties", {}).get("discipline")
-                required_threshold = self._get_merge_threshold(discipline, existing_discipline)
+                required_threshold = self._get_merge_threshold(discipline, existing_discipline, node_type)
 
                 if score >= required_threshold:
                     # Type filter if provided

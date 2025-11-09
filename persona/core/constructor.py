@@ -409,6 +409,74 @@ class GraphConstructor:
 
         return relationships
 
+    async def _create_highlight_usernote_relationships(self, nodes: List[Node]) -> List[Relationship]:
+        """
+        Create ANNOTATED_WITH relationships between Highlight and UserNote nodes.
+
+        Rule: Every UserNote MUST have a corresponding Highlight node, and they must be connected.
+        Note: Not every Highlight has a UserNote (user can highlight without adding a note).
+
+        This method ensures that when both Highlight and UserNote nodes are present in the same
+        ingestion batch (identified by matching highlight_id), they are automatically connected
+        with an ANNOTATED_WITH relationship.
+
+        Args:
+            nodes: List of schema Node objects
+
+        Returns:
+            List of Relationship objects with ANNOTATED_WITH relations
+        """
+        relationships = []
+
+        # Find all Highlight and UserNote nodes
+        highlights = [n for n in nodes if n.type == "Highlight"]
+        usernotes = [n for n in nodes if n.type == "UserNote"]
+
+        # If no UserNotes, nothing to do
+        if not usernotes:
+            return relationships
+
+        # Create a mapping of highlight_id -> Highlight nodes
+        # highlight_id is stored as a list, so we need to check the first element
+        highlight_map = {}
+        for highlight in highlights:
+            if highlight.highlight_id and len(highlight.highlight_id) > 0:
+                highlight_id = highlight.highlight_id[0]
+                highlight_map[highlight_id] = highlight
+
+        # For each UserNote, find its matching Highlight and create relationship
+        for usernote in usernotes:
+            if not usernote.highlight_id or len(usernote.highlight_id) == 0:
+                logger.error(f"UserNote '{usernote.name}' has no highlight_id - this violates the constraint that every UserNote must have a Highlight")
+                continue
+
+            highlight_id = usernote.highlight_id[0]
+
+            # Find the matching Highlight node
+            if highlight_id not in highlight_map:
+                logger.error(
+                    f"UserNote '{usernote.name}' references highlight_id={highlight_id}, "
+                    f"but no matching Highlight node found in this batch. This violates the constraint "
+                    f"that every UserNote must have a corresponding Highlight."
+                )
+                continue
+
+            highlight = highlight_map[highlight_id]
+
+            # Create the ANNOTATED_WITH relationship: Highlight -> UserNote
+            relationships.append(Relationship(
+                source=highlight.name,
+                target=usernote.name,
+                relation="ANNOTATED_WITH"
+            ))
+
+            logger.debug(f"Created ANNOTATED_WITH: '{highlight.name}' -> '{usernote.name}'")
+
+        if relationships:
+            logger.info(f"Created {len(relationships)} ANNOTATED_WITH relationship(s)")
+
+        return relationships
+
     async def _recalculate_bloom_levels(self, concept_names: List[str]) -> None:
         """
         Recalculate bloom levels for given concepts after ingestion.
@@ -459,11 +527,23 @@ class GraphConstructor:
         # Convert to NodeModels
         node_models = self._nodes_to_node_models(nodes, embeddings)
 
-        # Create cognitive level relationships
-        cognitive_relationships = await self._create_cognitive_level_relationships(nodes)
+        # Filter out any system-managed relationships from LLM (these should only be created by the system)
+        # - HAS_UNDERSTANDING_LEVEL: System creates these for Concept-CognitiveLevel pairs
+        # - ANNOTATED_WITH: System creates these for Highlight-UserNote pairs
+        llm_relationships = [
+            rel for rel in relationships
+            if rel.relation not in ["HAS_UNDERSTANDING_LEVEL", "ANNOTATED_WITH"]
+        ]
+        filtered_count = len(relationships) - len(llm_relationships)
+        if filtered_count > 0:
+            logger.warning(f"Filtered out {filtered_count} system-managed relationship(s) from LLM output (system creates these automatically)")
 
-        # Convert relationships (include both LLM-generated and cognitive level relationships)
-        all_relationships = relationships + cognitive_relationships
+        # Create system-managed relationships
+        cognitive_relationships = await self._create_cognitive_level_relationships(nodes)
+        highlight_usernote_relationships = await self._create_highlight_usernote_relationships(nodes)
+
+        # Convert relationships (include both LLM-generated and system-managed relationships)
+        all_relationships = llm_relationships + cognitive_relationships + highlight_usernote_relationships
         relationship_models = [RelationshipModel(
             source=rel.source,
             target=rel.target,

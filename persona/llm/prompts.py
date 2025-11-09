@@ -198,6 +198,23 @@ The nodes will be indexed in a knowledge graph and vector database hybrid system
   * ONLY include if explicitly provided in source metadata
   * For batch processing, source_index handles mapping - don't manually extract these
 
+## Extraction Principles: Quality Over Quantity
+
+**CRITICAL GUIDANCE FOR THEME EXTRACTION - BE EXTREMELY CONSERVATIVE**:
+- **IMPORTANT**: Themes should be RARE - most content should be Concepts instead
+- **Reading Session Chunks**: Extract AT MOST 1 Theme per chunk, and ONLY if it's a major chapter-level topic
+- **Skip Theme extraction** unless the topic appears 3+ times or is explicitly a chapter/section title
+- **Highlights with Notes**: Almost NEVER extract a Theme - prioritize the Concept instead
+- **Goal**: A sparse, high-level topic map, NOT a detailed catalog of every subject mentioned
+- **Test**: "Is this THE central theme of the entire chapter?" If no, DO NOT extract it as a Theme
+- **Strict Rule**: Themes should represent ONLY the absolute most important recurring topics (e.g., book-level themes, not paragraph-level topics)
+
+**Node Count Guidelines (STRICTLY ENFORCED)**:
+- For a typical reading chunk (500-1000 words): 1-3 Concepts + 0-1 Theme maximum (prefer 0 Themes)
+- For a highlight with note: 1 Highlight + 1 UserNote + 1 Concept + 1 CognitiveLevel + NO Theme (99% of cases)
+- For plain reading (no highlights): Extract only the most important Concepts; avoid Themes unless chapter-level topic
+- **Target ratio**: Aim for <10% Themes relative to Concepts (e.g., 10 Concepts = max 1 Theme)
+
 ## What to Extract
 
 ### PRIMARY PATTERN: 4-Node Extraction for Highlights/Notes
@@ -318,17 +335,23 @@ These 4 nodes will be connected via relationships (see GET_RELATIONSHIPS for det
 - **Terms do NOT get CognitiveLevel nodes** - they are reference points, not learned concepts
 
 **Theme nodes** (type: "Theme"):
-- Medium-length phrases (4-10 words) that represent topics, subjects, or themes but are NOT complete sentences
-- Topical concepts from reading progress, chapter themes, or subject matter
-- Examples:
-  * "Loss of intellectual mentor and self-reinvention"
-  * "Transformation through suffering"
-  * "Professional jealousy and self-image"
-  * "Alliances with conservative figures"
-  * "Shift toward Aristotelian reason"
-- Use Theme when: The node is a topic or subject phrase but not a grammatically complete statement
-- **Themes do NOT get CognitiveLevel nodes** - they are subjects/topics, not learned concepts with depth
-- Themes can be RELATED TO Concepts, but are not Concepts themselves
+- Medium-length phrases (4-10 words) that represent MAJOR topics or themes (NOT complete sentences)
+- **EXTRACT SPARINGLY**: Themes should be RARE - use only for chapter-level or book-level topics
+- **STRICT CRITERIA**: Extract Theme ONLY if ALL of the following are true:
+  * The topic appears 3+ times across multiple paragraphs/sections
+  * It's a central organizing theme of the chapter/section (would be a chapter heading)
+  * NO existing Concept node captures this topic adequately
+  * It's NOT just a paragraph-level subject (those should be Concepts instead)
+- Examples of VALID Themes (book/chapter-level):
+  * "Transformation through suffering" (recurring throughout chapter)
+  * "Loss of intellectual mentor and self-reinvention" (major life transition)
+- Examples of INVALID Themes (too granular - make these Concepts instead):
+  * ❌ "Alliances with conservative figures" (too specific - make it a Concept)
+  * ❌ "Professional jealousy" (paragraph-level - make it a Concept)
+  * ❌ "Shift toward Aristotelian reason" (one-time mention - make it a Concept)
+- **DEFAULT ACTION**: When in doubt, create a Concept (complete sentence) instead of a Theme
+- **Themes do NOT get CognitiveLevel nodes** - they are subjects/topics, not learned concepts
+- **Target**: Extract max 1 Theme per 5-10 Concepts
 
 **Concept nodes** (type: "Concept"):
 - MUST be complete sentences or definitions (typically 8+ words with subject + verb + object/complement)
@@ -643,7 +666,6 @@ Guidelines for Creating Relationships:
       - REINFORCES: Strengthens or supports existing knowledge
       - READING_AT: Reading progress node connected to book/chapter
       - ENCOUNTERED_IN: Concept/idea encountered while reading specific section
-      - ANNOTATED_WITH: Highlight node connected to UserNote node
       - SYNTHESIZED_INTO: Highlight/UserNote connected to Concept node
 
    J. Person & Attribution Relationships:
@@ -666,9 +688,8 @@ Guidelines for Creating Relationships:
 
    SPECIAL CASES - ALWAYS CREATE THESE:
 
-   a) **3-NODE PATTERN - HIGHEST PRIORITY**:
+   a) **HIGHLIGHT/USERNOTE → CONCEPT PATTERN - HIGHEST PRIORITY**:
       When you see Highlight, UserNote, and Concept nodes, create these relationships:
-      - Highlight ANNOTATED_WITH UserNote
       - Highlight SYNTHESIZED_INTO Concept
       - UserNote SYNTHESIZED_INTO Concept
 
@@ -678,12 +699,12 @@ Guidelines for Creating Relationships:
       - Node3: "Frank Knight and Henry Simons were Milton Friedman's advisors" (type: Concept)
 
       Relationships:
-      - Node1 ANNOTATED_WITH Node2
       - Node1 SYNTHESIZED_INTO Node3
       - Node2 SYNTHESIZED_INTO Node3
 
-      NOTE: CognitiveLevel relationships (HAS_UNDERSTANDING_LEVEL) are created automatically by the system.
-      DO NOT create any relationships involving CognitiveLevel nodes.
+      NOTE: System-managed relationships are created automatically. DO NOT create:
+      - HAS_UNDERSTANDING_LEVEL (Concept → CognitiveLevel) - System creates these
+      - ANNOTATED_WITH (Highlight → UserNote) - System creates these
 
    b) Reading Progress → Highlights/Notes:
       - When a ReadingProgress node exists, connect it with READING_AT to the book

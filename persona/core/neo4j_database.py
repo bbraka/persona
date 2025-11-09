@@ -857,7 +857,7 @@ class Neo4jConnectionManager:
     async def get_all_relationships(self, user_id: str) -> List[Dict[str, Any]]:
         query = """
         MATCH (source:NodeName {UserId: $user_id})-[r]->(target:NodeName {UserId: $user_id})
-        RETURN source.name AS source, type(r) AS relation, target.name AS target
+        RETURN source.name AS source, COALESCE(r.value, type(r)) AS relation, target.name AS target
         """
         async with self._ensure_driver().session() as session:
             result = await session.run(query, user_id=user_id)
