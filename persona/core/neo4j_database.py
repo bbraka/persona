@@ -167,12 +167,15 @@ class Neo4jConnectionManager:
                 await self._create_relationship(session, relationship, user_id)
 
     async def _create_relationship(self, session, relationship: Dict[str, Any], user_id: str) -> None:
-        # Base query to create relationship
+        # Sanitize relationship type to prevent injection
+        relation_type = relationship["relation"].replace("`", "").replace("'", "").replace('"', "")
+
+        # Build query with dynamic relationship type (cannot be parameterized in Neo4j)
         query = (
-            "MATCH (source {UserId: $user_id}), (target {UserId: $user_id}) "
-            "WHERE source.name = $source AND target.name = $target "
-            "MERGE (source)-[r:`{relation}`]->(target) "
-            "SET r.value = $relation"
+            f"MATCH (source {{UserId: $user_id}}), (target {{UserId: $user_id}}) "
+            f"WHERE source.name = $source AND target.name = $target "
+            f"MERGE (source)-[r:`{relation_type}`]->(target) "
+            f"SET r.value = $relation"
         )
 
         params = {
@@ -328,12 +331,15 @@ class Neo4jConnectionManager:
                             )
                             continue
 
-                    # Create the relationship
+                    # Sanitize relationship type to prevent injection
+                    relation_type = relationship["relation"].replace("`", "").replace("'", "").replace('"', "")
+
+                    # Create the relationship with dynamic relationship type
                     query = (
-                        "MATCH (source {UserId: $user_id}), (target {UserId: $user_id}) "
-                        "WHERE source.name = $source AND target.name = $target "
-                        "MERGE (source)-[r:`{relation}`]->(target) "
-                        "SET r.value = $relation"
+                        f"MATCH (source {{UserId: $user_id}}), (target {{UserId: $user_id}}) "
+                        f"WHERE source.name = $source AND target.name = $target "
+                        f"MERGE (source)-[r:`{relation_type}`]->(target) "
+                        f"SET r.value = $relation"
                     )
                     await tx.run(query, {
                         "source": relationship["source"],

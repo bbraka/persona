@@ -145,6 +145,22 @@ Each node should represent a reusable concept that can connect across different 
 
 **IMPORTANT**: You must respond with valid JSON format only.
 
+**CRITICAL FILTERING RULE - DO NOT EXTRACT**:
+You are STRICTLY FORBIDDEN from extracting nodes about:
+- ❌ The app itself (Pyri, Persona, or any knowledge graph application)
+- ❌ App features (content suggestions, knowledge graph, citation support, microservices, APIs)
+- ❌ App functionality (how the app works, what the app does, system architecture)
+- ❌ System prompts or instructions (this prompt, extraction rules, prompt engineering)
+- ❌ Technical implementation details (embeddings, vector databases, graph databases, Neo4j, LLMs)
+- ❌ App metadata or system information
+
+**ONLY EXTRACT USER KNOWLEDGE**:
+✓ What the user is learning, reading, or studying
+✓ User's thoughts, insights, and reflections
+✓ Subject matter content (books, articles, research)
+✓ User's personal experiences and observations
+✓ Domain knowledge the user is acquiring
+
 These nodes should represent TRANSFERABLE KNOWLEDGE - concepts, principles, patterns, and insights that can:
 - Connect across different sources and contexts
 - Apply to the user's life beyond just one book or conversation
@@ -173,7 +189,7 @@ The nodes will be indexed in a knowledge graph and vector database hybrid system
 ## Required Fields Per Node
 
 - **name**: Concise, generalizable concept (3-8 words) representing transferable knowledge
-- **type**: One of: Identity · Memory · Preference · Trait · Narrative · Goal · Event · State · Relationship · Belief · Term · Other types shared below
+- **type**: One of: Identity · Memory · Preference · Trait · Narrative · Goal · Event · State · Relationship · Belief · Term · User Chat · Chat Agent Response · Other types shared below
 - **chunk_ids**: OPTIONAL - Array of UUIDs linking to specific book content sections
   * ONLY include if EXPLICITLY provided in input AND in valid UUID format
   * VALID format: ["550e8400-e29b-41d4-a716-446655440000"] (8-4-4-4-12 hexadecimal pattern with hyphens)
@@ -213,21 +229,40 @@ The nodes will be indexed in a knowledge graph and vector database hybrid system
 - For a typical reading chunk (500-1000 words): 1-3 Concepts + 0-1 Theme maximum (prefer 0 Themes)
 - For a highlight with note: 1 Highlight + 1 UserNote + 1 Concept + 1 CognitiveLevel + NO Theme (99% of cases)
 - For plain reading (no highlights): Extract only the most important Concepts; avoid Themes unless chapter-level topic
+- For chat messages: 1 User Chat + 1 Chat Agent Response + optional Concept (if meaningful knowledge)
 - **Target ratio**: Aim for <10% Themes relative to Concepts (e.g., 10 Concepts = max 1 Theme)
 
 ## What to Extract
 
-### PRIMARY PATTERN: 4-Node Extraction for Highlights/Notes
+### PRIMARY PATTERN: Identifying Content Type
 
-When ingesting a highlight with a user note, you MUST create exactly 4 interconnected nodes:
+**STEP 1: Determine if this is a BOOK HIGHLIGHT or a CHAT MESSAGE**
+
+Look at the title/source metadata to determine content type:
+
+**A. BOOK HIGHLIGHTS/NOTES** (title mentions book/chapter/reading OR has highlight_id):
+- Title examples: "Chapter 5: Economics", "Reading Session: The Fountainhead", "Book: Atlas Shrugged"
+- OR: Metadata contains highlight_id field
+- Pattern: Extract 4 nodes (Highlight → UserNote → Concept → CognitiveLevel)
+
+**B. CHAT MESSAGES** (title/source indicates conversation/chat/question):
+- Title examples: "is chat working?", "test message", "conversation with assistant"
+- Pattern: Extract 2-3 nodes (see Chat Pattern below)
+- **IMPORTANT**: DO NOT create Highlight or UserNote nodes for chat content
+
+### BOOK HIGHLIGHT PATTERN: 4-Node Extraction
+
+When ingesting a **BOOK highlight with a user note**, create exactly 4 interconnected nodes:
 
 1. **Highlight Node** (type: "Highlight")
    - Name: The highlighted text itself or a concise representation
    - Contains the actual highlighted content from the book/article
+   - **ONLY for book highlights** - never for chat messages
 
 2. **UserNote Node** (type: "UserNote")
    - Name: The user's comment/annotation on the highlight
    - Contains the user's personal reflection, thought, or note
+   - **ONLY for book notes** - never for chat messages
 
 3. **Concept Node** (type: "Concept")
    - Name: A synthesized FULL SENTENCE combining highlight + note + surrounding context
@@ -243,6 +278,28 @@ When ingesting a highlight with a user note, you MUST create exactly 4 interconn
    - NOTE: Higher levels mean demonstrated ability, NOT necessarily correctness
    - **IMPORTANT**: Each Concept MUST have its own dedicated CognitiveLevel node
    - NEVER reuse or share CognitiveLevel nodes between different Concepts
+
+### CHAT MESSAGE PATTERN: 2-3 Node Extraction
+
+When ingesting **CHAT MESSAGES or CONVERSATIONS** (NOT book highlights):
+
+1. **User Message Node** (type: "User Chat")
+   - Name: The user's question or statement
+   - Contains what the user asked or said
+   - Example: "is chat working?"
+
+2. **Agent Response Node** (type: "Chat Agent Response")
+   - Name: The assistant's reply
+   - Contains the response or answer
+   - Example: "Yes, the chat is working! How can I assist you today?"
+
+3. **Concept Node** (type: "Concept") - OPTIONAL
+   - ONLY extract if the conversation contains meaningful knowledge worth preserving
+   - Name: A synthesized FULL SENTENCE capturing the key insight from the exchange
+   - Example: "The chat system is functioning correctly and ready to assist users"
+   - Skip this if the conversation is trivial (e.g., just testing, small talk)
+
+**CRITICAL**: Chat messages should NEVER create Highlight or UserNote nodes - those are exclusively for book content.
 
 ### Cognitive Level Assessment Guide
 
@@ -555,6 +612,35 @@ IMPORTANT NOTES:
    - For single source: Include entity IDs directly if provided in metadata
    - Empty arrays [] acceptable when no IDs available
 
+Example Response Format for CHAT MESSAGES:
+{
+  "nodes": [
+    {
+      "name": "is chat working?",
+      "type": "User Chat",
+      "discipline": "Communication",
+      "confidence": 1.0,
+      "properties": {"message_type": "question"}
+    },
+    {
+      "name": "Yes, the chat is working! How can I assist you today?",
+      "type": "Chat Agent Response",
+      "discipline": "Communication",
+      "confidence": 1.0,
+      "properties": {"message_type": "confirmation"}
+    },
+    {
+      "name": "The chat system is functioning correctly and ready to assist users",
+      "type": "Concept",
+      "discipline": "Technology",
+      "confidence": 0.7
+    }
+  ]
+}
+
+NOTE: Chat messages should NOT have Highlight or UserNote nodes - those are exclusively for book content.
+For trivial chat (testing, small talk), you may omit the Concept node entirely and just extract the 2 message nodes.
+
 Example Response Format for USER DATA (NOTE: No chunk_ids for personal data):
 {
   "nodes": [
@@ -595,6 +681,13 @@ Return only relationships that add valuable context and help understand connecti
 
 IMPORTANT: You must respond with valid JSON format only.
 CRITICAL: You will receive a list of nodes with temporary IDs (Node1, Node2, etc.). You MUST use these exact IDs in your relationships, NOT the node names.
+
+**CRITICAL FILTERING RULE**:
+DO NOT create relationships involving app-related nodes:
+- ❌ No relationships about Pyri, Persona, or knowledge graph applications
+- ❌ No relationships about app features or system functionality
+- ❌ No relationships about technical implementation
+ONLY create relationships between USER KNOWLEDGE nodes (concepts the user is learning, not app functionality).
 
 Guidelines for Creating Relationships:
 
@@ -688,7 +781,7 @@ Guidelines for Creating Relationships:
 
    SPECIAL CASES - ALWAYS CREATE THESE:
 
-   a) **HIGHLIGHT/USERNOTE → CONCEPT PATTERN - HIGHEST PRIORITY**:
+   a) **HIGHLIGHT/USERNOTE → CONCEPT PATTERN - HIGHEST PRIORITY** (for BOOK content only):
       When you see Highlight, UserNote, and Concept nodes, create these relationships:
       - Highlight SYNTHESIZED_INTO Concept
       - UserNote SYNTHESIZED_INTO Concept
@@ -706,7 +799,25 @@ Guidelines for Creating Relationships:
       - HAS_UNDERSTANDING_LEVEL (Concept → CognitiveLevel) - System creates these
       - ANNOTATED_WITH (Highlight → UserNote) - System creates these
 
-   b) Reading Progress → Highlights/Notes:
+   b) **CHAT MESSAGE PATTERN** (for CHAT/CONVERSATION content only):
+      When you see "User Chat" and "Chat Agent Response" nodes:
+      - User Chat LEADS_TO Chat Agent Response
+      - If a Concept node exists: User Chat SYNTHESIZED_INTO Concept
+      - If a Concept node exists: Chat Agent Response SYNTHESIZED_INTO Concept
+
+      Example with nodes:
+      - Node1: "is chat working?" (type: User Chat)
+      - Node2: "Yes, the chat is working! How can I assist you today?" (type: Chat Agent Response)
+      - Node3: "The chat system is functioning correctly" (type: Concept)
+
+      Relationships:
+      - Node1 LEADS_TO Node2
+      - Node1 SYNTHESIZED_INTO Node3
+      - Node2 SYNTHESIZED_INTO Node3
+
+      **CRITICAL**: DO NOT create Highlight or UserNote nodes for chat messages!
+
+   c) Reading Progress → Highlights/Notes:
       - When a ReadingProgress node exists, connect it with READING_AT to the book
       - Connect any concepts from same page/chapter with ENCOUNTERED_IN to ReadingProgress
       - Example: "Page 47 of Atlas Shrugged" READING_AT "Atlas Shrugged"
