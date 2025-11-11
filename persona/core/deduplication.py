@@ -125,8 +125,8 @@ class NodeDeduplicator:
                     score = result.get("score", 0.0)
 
                     # Type-aware threshold for same-book matches
-                    # Themes: 0.65 (very liberal), Others: 0.75
-                    same_book_threshold = 0.65 if node_type == "Theme" else 0.75
+                    # Themes: 0.60 (very liberal - consolidate aggressively), Others: 0.75
+                    same_book_threshold = 0.60 if node_type == "Theme" else 0.75
 
                     if score >= same_book_threshold:
                         node_data = await self.neo4j_manager.get_node_data(result["nodeName"], user_id)

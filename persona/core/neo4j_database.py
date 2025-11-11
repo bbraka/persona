@@ -170,13 +170,30 @@ class Neo4jConnectionManager:
         # Sanitize relationship type to prevent injection
         relation_type = relationship["relation"].replace("`", "").replace("'", "").replace('"', "")
 
-        # Build query with dynamic relationship type (cannot be parameterized in Neo4j)
-        query = (
-            f"MATCH (source {{UserId: $user_id}}), (target {{UserId: $user_id}}) "
-            f"WHERE source.name = $source AND target.name = $target "
-            f"MERGE (source)-[r:`{relation_type}`]->(target) "
-            f"SET r.value = $relation"
-        )
+        # Special handling for HAS_UNDERSTANDING_LEVEL relationships
+        # These MUST match by concept_uuid, not just by name, to avoid connecting
+        # Concept nodes to CognitiveLevel nodes that belong to other Concepts
+        if relation_type == "HAS_UNDERSTANDING_LEVEL":
+            query = (
+                f"MATCH (source:NodeName {{UserId: $user_id}}), (target:NodeName {{UserId: $user_id}}) "
+                f"WHERE source.name = $source "
+                f"AND target.name = $target "
+                f"AND source.type = 'Concept' "
+                f"AND target.type = 'CognitiveLevel' "
+                f"AND source.concept_uuid IS NOT NULL "
+                f"AND target.concept_uuid IS NOT NULL "
+                f"AND source.concept_uuid = target.concept_uuid "
+                f"MERGE (source)-[r:`{relation_type}`]->(target) "
+                f"SET r.value = $relation"
+            )
+        else:
+            # Standard relationship creation: match by name only
+            query = (
+                f"MATCH (source {{UserId: $user_id}}), (target {{UserId: $user_id}}) "
+                f"WHERE source.name = $source AND target.name = $target "
+                f"MERGE (source)-[r:`{relation_type}`]->(target) "
+                f"SET r.value = $relation"
+            )
 
         params = {
             "source": relationship["source"],
@@ -482,7 +499,8 @@ class Neo4jConnectionManager:
         index_name: str = "embeddings_index",
         book_id: Optional[int] = None,
         highlight_id: Optional[int] = None,
-        writing_id: Optional[int] = None
+        writing_id: Optional[int] = None,
+        node_type: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Query nodes by cosine similarity with optional entity ID pre-filtering.
@@ -496,14 +514,15 @@ class Neo4jConnectionManager:
         - book_id (Optional[int]): Optional book ID to filter results.
         - highlight_id (Optional[int]): Optional highlight ID to filter results.
         - writing_id (Optional[int]): Optional writing ID to filter results.
+        - node_type (Optional[str]): Optional node type to filter results (e.g., "Person", "Concept").
 
         Returns:
         - List[Dict[str, Any]]: A list of dictionaries containing the node ID, node name, and their similarity scores.
         """
-        # If entity IDs are provided, use direct query with pre-filtering
-        if book_id is not None or highlight_id is not None or writing_id is not None:
+        # If entity IDs or node_type filter are provided, use direct query with pre-filtering
+        if book_id is not None or highlight_id is not None or writing_id is not None or node_type is not None:
             return await self._query_similarity_with_entity_filter(
-                keyword_embedding, user_id, limit, book_id, highlight_id, writing_id
+                keyword_embedding, user_id, limit, book_id, highlight_id, writing_id, node_type
             )
 
         # Otherwise use the vector index (faster for unfiltered queries)
@@ -541,7 +560,8 @@ class Neo4jConnectionManager:
         limit: int,
         book_id: Optional[int] = None,
         highlight_id: Optional[int] = None,
-        writing_id: Optional[int] = None
+        writing_id: Optional[int] = None,
+        node_type: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Query nodes by computing cosine similarity directly, with entity ID pre-filtering.
@@ -567,6 +587,10 @@ class Neo4jConnectionManager:
             where_conditions.append("$writing_id IN n.writing_id")
             params["writing_id"] = writing_id
 
+        if node_type is not None:
+            where_conditions.append("n.type = $node_type")
+            params["node_type"] = node_type
+
         where_clause = " AND ".join(where_conditions)
 
         # Direct cosine similarity calculation on filtered nodes
@@ -586,7 +610,7 @@ class Neo4jConnectionManager:
         LIMIT $limit
         """
 
-        logger.info(f"Similarity search with entity pre-filter: book_id={book_id}, highlight_id={highlight_id}, writing_id={writing_id}")
+        logger.info(f"Similarity search with filter: book_id={book_id}, highlight_id={highlight_id}, writing_id={writing_id}, node_type={node_type}")
 
         results = []
         async with self._ensure_driver().session() as session:

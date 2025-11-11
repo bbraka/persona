@@ -253,7 +253,8 @@ class GraphOps:
         index_name: str = "embeddings_index",
         book_id: Optional[int] = None,
         highlight_id: Optional[int] = None,
-        writing_id: Optional[int] = None
+        writing_id: Optional[int] = None,
+        node_type: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Perform a similarity search on the graph based on a text query.
@@ -267,6 +268,7 @@ class GraphOps:
             book_id: Optional book ID to filter results
             highlight_id: Optional highlight ID to filter results
             writing_id: Optional writing ID to filter results
+            node_type: Optional node type to filter results (e.g., "Person", "Concept")
 
         Returns:
             Dictionary with query and filtered results
@@ -282,14 +284,14 @@ class GraphOps:
 
         logger.debug(f"Performing similarity search for the query: '{query}' for user ID: '{user_id}'")
 
-        # When entity IDs are provided, use a lower threshold since we're already pre-filtering
+        # When entity IDs or node_type filter are provided, use a lower threshold since we're already pre-filtering
         # The manual cosine calculation produces different score ranges than the vector index
-        has_entity_filter = book_id is not None or highlight_id is not None or writing_id is not None
+        has_entity_filter = book_id is not None or highlight_id is not None or writing_id is not None or node_type is not None
         if has_entity_filter:
             # Lower threshold for entity-filtered queries (manual cosine scores tend to be lower)
             effective_threshold = 0.0  # Return all results from pre-filtered set, sorted by relevance
             fetch_limit = max(limit * 10, 100)  # Fetch more to account for threshold
-            logger.info(f"Entity-filtered search with threshold={effective_threshold}")
+            logger.info(f"Filtered search (entity or type) with threshold={effective_threshold}")
         else:
             # Standard threshold for vector index queries
             effective_threshold = threshold
@@ -301,7 +303,8 @@ class GraphOps:
             limit=fetch_limit,
             book_id=book_id,
             highlight_id=highlight_id,
-            writing_id=writing_id
+            writing_id=writing_id,
+            node_type=node_type
         )
 
         # Filter by effective threshold and apply limit
@@ -499,6 +502,42 @@ class GraphOps:
                     f"Redirected relationship: {rel.source}-[{rel.relation}]->{rel.target} "
                     f"=> {source}-[{rel.relation}]->{target}"
                 )
+
+        # STEP 3.5: Update concept_uuid for CognitiveLevel nodes whose Concept was merged
+        # When Concept A' is merged into Concept A, the CognitiveLevel for A' needs to have
+        # its concept_uuid updated to match Concept A's UUID so both cognitive levels can connect
+        concept_uuid_updates = []
+        for node in graph_update.nodes:
+            # Check if this is a CognitiveLevel node with a concept_uuid
+            if node.type == "CognitiveLevel" and hasattr(node, 'concept_uuid') and node.concept_uuid:
+                # Check if any Concept nodes in this batch were merged
+                concept_nodes = [n for n in graph_update.nodes if n.type == "Concept"]
+                for concept_node in concept_nodes:
+                    # If this Concept was merged (exists in node_mapping)
+                    if concept_node.name in node_mapping:
+                        merged_into = node_mapping[concept_node.name]
+
+                        # If this CognitiveLevel has the merged Concept's UUID, update it
+                        if hasattr(concept_node, 'concept_uuid') and concept_node.concept_uuid:
+                            # Get the UUID of the target (canonical) Concept
+                            target_concept_uuid = await self._get_concept_uuid_if_exists(merged_into, user_id)
+                            if target_concept_uuid:
+                                # Update the CognitiveLevel's concept_uuid to match the canonical Concept
+                                concept_uuid_updates.append({
+                                    "cognitive_level_name": node.name,
+                                    "old_uuid": node.concept_uuid,
+                                    "new_uuid": target_concept_uuid
+                                })
+                                # Update in the node data
+                                for node_data in nodes_data:
+                                    if node_data["name"] == node.name:
+                                        node_data["properties"]["concept_uuid"] = target_concept_uuid
+                                        logger.info(
+                                            f"Updated concept_uuid for CognitiveLevel '{node.name}': "
+                                            f"{node.concept_uuid} -> {target_concept_uuid} "
+                                            f"(Concept merged: {concept_node.name} -> {merged_into})"
+                                        )
+                                        break
 
         # Execute everything in a single transaction
         await self.neo4j_manager.update_graph_transactional(
@@ -1240,6 +1279,137 @@ class GraphOps:
             else:
                 logger.warning(f"Node {node_name} not found for user {user_id}")
 
+    async def prune_infrequent_themes(
+        self,
+        user_id: str,
+        min_chunks: int = 3,
+        min_books: int = 2
+    ) -> Dict[str, Any]:
+        """
+        Prune Theme nodes that appear infrequently after similarity merging.
+
+        This implements Tier 2 of the two-tier Theme consolidation strategy:
+        - Tier 1: Aggressive similarity merging (0.60 threshold) consolidates similar Themes
+        - Tier 2: This method prunes Themes with insufficient evidence
+
+        A Theme is kept if it meets EITHER criterion:
+        - Has 3+ unique chunk_ids (recurring across multiple reading chunks), OR
+        - Has 2+ book_ids (recurring theme across multiple books)
+
+        Otherwise, the Theme is too granular/one-off and gets deleted.
+
+        Args:
+            user_id: User ID
+            min_chunks: Minimum chunk_ids required for single-book Theme (default: 3)
+            min_books: Minimum book_ids for cross-book Theme (default: 2)
+
+        Returns:
+            Dict with stats:
+            {
+                "themes_analyzed": int,
+                "themes_kept": int,
+                "themes_pruned": int,
+                "pruned_themes": [{"name": str, "chunks": int, "books": int}, ...]
+            }
+        """
+        if not await self.user_exists(user_id):
+            logger.warning(f"User {user_id} does not exist. Cannot prune themes.")
+            return {
+                "themes_analyzed": 0,
+                "themes_kept": 0,
+                "themes_pruned": 0,
+                "pruned_themes": []
+            }
+
+        if not self.neo4j_manager.driver:
+            logger.error("Neo4j driver not initialized")
+            return {
+                "themes_analyzed": 0,
+                "themes_kept": 0,
+                "themes_pruned": 0,
+                "pruned_themes": []
+            }
+
+        # Query to count and prune themes
+        query = """
+        // Find all Theme nodes for this user
+        MATCH (n:NodeName {UserId: $user_id})
+        WHERE n.type = 'Theme'
+        WITH n,
+             size(COALESCE(n.chunk_ids, [])) as chunk_count,
+             size(COALESCE(n.book_id, [])) as book_count
+
+        // Classify as KEEP or PRUNE
+        WITH n, chunk_count, book_count,
+             CASE
+                 WHEN chunk_count >= $min_chunks THEN 'KEEP'
+                 WHEN book_count >= $min_books THEN 'KEEP'
+                 ELSE 'PRUNE'
+             END as action
+
+        // Collect stats
+        WITH
+            count(n) as total,
+            sum(CASE WHEN action = 'KEEP' THEN 1 ELSE 0 END) as kept,
+            collect(CASE WHEN action = 'PRUNE' THEN {
+                name: n.name,
+                chunks: chunk_count,
+                books: book_count
+            } ELSE null END) as to_prune_list
+
+        // Filter nulls from to_prune_list
+        WITH total, kept, [item IN to_prune_list WHERE item IS NOT NULL] as to_prune
+
+        // Delete the themes to prune
+        UNWIND CASE WHEN size(to_prune) > 0 THEN to_prune ELSE [null] END as theme_info
+        OPTIONAL MATCH (n:NodeName {UserId: $user_id, name: theme_info.name})
+        WHERE n.type = 'Theme' AND theme_info IS NOT NULL
+        DETACH DELETE n
+
+        RETURN total, kept, to_prune as pruned_list
+        """
+
+        async with self.neo4j_manager.driver.session() as session:
+            result = await session.run(
+                query,
+                user_id=user_id,
+                min_chunks=min_chunks,
+                min_books=min_books
+            )
+            data = await result.data()
+
+            if not data or not data[0]:
+                logger.info("No Theme nodes found to analyze")
+                return {
+                    "themes_analyzed": 0,
+                    "themes_kept": 0,
+                    "themes_pruned": 0,
+                    "pruned_themes": []
+                }
+
+            record = data[0]
+            total = record.get("total", 0) or 0
+            kept = record.get("kept", 0) or 0
+            pruned_list = record.get("pruned_list", []) or []
+            pruned = len(pruned_list)
+
+            if pruned > 0:
+                pruned_names = [t["name"][:60] + "..." if len(t["name"]) > 60 else t["name"] for t in pruned_list]
+                logger.info(
+                    f"Theme pruning complete: {pruned}/{total} themes removed "
+                    f"(kept: {kept} with sufficient evidence). "
+                    f"Removed: {pruned_names[:5]}{'...' if len(pruned_names) > 5 else ''}"
+                )
+            else:
+                logger.info(f"Theme pruning complete: All {kept}/{total} themes have sufficient evidence (no pruning needed)")
+
+            return {
+                "themes_analyzed": total,
+                "themes_kept": kept,
+                "themes_pruned": pruned,
+                "pruned_themes": pruned_list
+            }
+
 class GraphContextRetriever:
     def __init__(self, graph_ops: GraphOps):
         self.graph_ops = graph_ops
@@ -1247,9 +1417,36 @@ class GraphContextRetriever:
     async def get_rich_context(self, query: str, user_id: str, top_k: int = 5, max_hops: int = 2) -> str:
         """
         Get rich context from the graph based on a text query.
+        Uses two-tiered retrieval: general similarity search + Person-specific search.
         """
-        similar_nodes = await self.graph_ops.text_similarity_search(query=query, user_id=user_id, limit=top_k, index_name="embeddings_index")
-        context = await self.crawl_graph(similar_nodes['results'], max_hops, user_id)
+        # Tier 1: General vector similarity search (all node types)
+        similar_nodes = await self.graph_ops.text_similarity_search(
+            query=query,
+            user_id=user_id,
+            limit=top_k,
+            index_name="embeddings_index"
+        )
+
+        # Tier 2: Person-specific vector search (guarantees Person nodes are included when relevant)
+        person_nodes = await self.graph_ops.text_similarity_search(
+            query=query,
+            user_id=user_id,
+            limit=3,  # Get top 3 Person nodes
+            index_name="embeddings_index",
+            node_type="Person"
+        )
+
+        # Merge results, avoiding duplicates
+        all_nodes = similar_nodes['results'].copy()
+        existing_node_names = {node['nodeName'] for node in all_nodes}
+
+        for person_node in person_nodes['results']:
+            if person_node['nodeName'] not in existing_node_names:
+                all_nodes.append(person_node)
+                logger.debug(f"Added Person node to context: {person_node['nodeName']} (score: {person_node['score']:.3f})")
+
+        # Crawl graph from all seed nodes
+        context = await self.crawl_graph(all_nodes, max_hops, user_id)
         return self.format_separated_context(context)
 
     async def crawl_graph(self, start_nodes, max_hops, user_id):

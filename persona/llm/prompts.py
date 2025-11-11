@@ -216,21 +216,39 @@ The nodes will be indexed in a knowledge graph and vector database hybrid system
 
 ## Extraction Principles: Quality Over Quantity
 
-**CRITICAL GUIDANCE FOR THEME EXTRACTION - BE EXTREMELY CONSERVATIVE**:
-- **IMPORTANT**: Themes should be RARE - most content should be Concepts instead
-- **Reading Session Chunks**: Extract AT MOST 1 Theme per chunk, and ONLY if it's a major chapter-level topic
-- **Skip Theme extraction** unless the topic appears 3+ times or is explicitly a chapter/section title
-- **Highlights with Notes**: Almost NEVER extract a Theme - prioritize the Concept instead
-- **Goal**: A sparse, high-level topic map, NOT a detailed catalog of every subject mentioned
-- **Test**: "Is this THE central theme of the entire chapter?" If no, DO NOT extract it as a Theme
-- **Strict Rule**: Themes should represent ONLY the absolute most important recurring topics (e.g., book-level themes, not paragraph-level topics)
+**Node Count Guidelines by Content Type**:
 
-**Node Count Guidelines (STRICTLY ENFORCED)**:
-- For a typical reading chunk (500-1000 words): 1-3 Concepts + 0-1 Theme maximum (prefer 0 Themes)
-- For a highlight with note: 1 Highlight + 1 UserNote + 1 Concept + 1 CognitiveLevel + NO Theme (99% of cases)
-- For plain reading (no highlights): Extract only the most important Concepts; avoid Themes unless chapter-level topic
-- For chat messages: 1 User Chat + 1 Chat Agent Response + optional Concept (if meaningful knowledge)
-- **Target ratio**: Aim for <10% Themes relative to Concepts (e.g., 10 Concepts = max 1 Theme)
+**A. Book Highlights/Notes** → 4-node pattern (Highlight + UserNote + Concept + CognitiveLevel):
+- Extract exactly: 1 Highlight + 1 UserNote + 1 Concept + 1 CognitiveLevel
+- **NO Themes** from highlights/notes (99% of cases) - Concepts come from this content type
+- Concept = full sentence synthesizing highlight + note + context
+
+**B. Book Reading Chunks** → Concept + optional Theme:
+- Extract: 1-3 Concepts per chunk (500-1000 words)
+- Extract: 0-1 Theme maximum (prefer 0) - Themes come from reading chunks when chapter-level
+- **Theme Criteria** (ALL must be true):
+  * Centrality: Important enough to be a chapter heading
+  * Abstraction: Cannot be expressed as a single Concept sentence
+  * Conservativeness: When in doubt, DON'T extract (Themes are optional!)
+- System will auto-consolidate similar Themes and prune those appearing in < 3 chunks
+
+**C. Chat Messages** → User Chat + Agent Response + optional Concept:
+- Extract: 1 User Chat + 1 Chat Agent Response
+- Extract: 1 Concept ONLY if meaningful knowledge (skip for trivial exchanges)
+- **NO Highlight/UserNote** for chat content - Concepts may arise from conversations
+- Concept = full sentence capturing key insight from exchange
+
+**D. Writing Projects** → Concepts + optional Themes:
+- Extract: Concepts representing arguments, insights, claims
+- Extract: Themes representing evidence/proof of thesis (central organizing ideas)
+- **Concepts arise from**: user's written arguments, analysis, synthesis
+- **Themes arise from**: recurring evidence patterns supporting the thesis
+
+**Quality Over Quantity**:
+- Aim for 3-5 well-connected, reusable nodes rather than 10 disconnected ones
+- Target ratio: <10% Themes relative to Concepts (e.g., 10 Concepts = max 1 Theme)
+- Each node should connect across contexts and be meaningful for the knowledge graph
+- **Theme Test**: "Is this THE central theme of the entire chapter?" If no, make it a Concept instead
 
 ## What to Extract
 
@@ -385,55 +403,38 @@ These 4 nodes will be connected via relationships (see GET_RELATIONSHIPS for det
 ### IMPORTANT: Term vs Theme vs Concept Distinction
 
 **Term nodes** (type: "Term"):
-- Single words or short phrases (1-3 words) that reference specific things, ideas, or names
-- Keywords, jargon, terminology, proper nouns, technical terms
+- Single words or short phrases (1-3 words): keywords, jargon, proper nouns, technical terms
 - Examples: "Objectivism", "Free market", "Utilitarianism", "Blockchain", "Neural networks"
-- Use Term when: The node is a label, name, or keyword rather than a complete thought
+- Use when: The node is a label, name, or keyword rather than a complete thought
 - **Terms do NOT get CognitiveLevel nodes** - they are reference points, not learned concepts
 
 **Theme nodes** (type: "Theme"):
-- Medium-length phrases (4-10 words) that represent MAJOR topics or themes (NOT complete sentences)
-- **EXTRACT SPARINGLY**: Themes should be RARE - use only for chapter-level or book-level topics
-- **STRICT CRITERIA**: Extract Theme ONLY if ALL of the following are true:
-  * The topic appears 3+ times across multiple paragraphs/sections
-  * It's a central organizing theme of the chapter/section (would be a chapter heading)
-  * NO existing Concept node captures this topic adequately
-  * It's NOT just a paragraph-level subject (those should be Concepts instead)
-- Examples of VALID Themes (book/chapter-level):
-  * "Transformation through suffering" (recurring throughout chapter)
-  * "Loss of intellectual mentor and self-reinvention" (major life transition)
-- Examples of INVALID Themes (too granular - make these Concepts instead):
-  * ❌ "Alliances with conservative figures" (too specific - make it a Concept)
-  * ❌ "Professional jealousy" (paragraph-level - make it a Concept)
-  * ❌ "Shift toward Aristotelian reason" (one-time mention - make it a Concept)
-- **DEFAULT ACTION**: When in doubt, create a Concept (complete sentence) instead of a Theme
+- Medium-length phrases (4-10 words) representing MAJOR topics (NOT complete sentences)
+- **EXTRACT SPARINGLY**: Themes are RARE - use only for chapter-level or book-level topics
+- Examples: "Transformation through suffering", "Loss of intellectual mentor and self-reinvention"
 - **Themes do NOT get CognitiveLevel nodes** - they are subjects/topics, not learned concepts
-- **Target**: Extract max 1 Theme per 5-10 Concepts
+- **Sources**: Book reading chunks (chapter-level topics), Writing projects (evidence/proof patterns)
 
 **Concept nodes** (type: "Concept"):
-- MUST be complete sentences or definitions (typically 8+ words with subject + verb + object/complement)
-- Grammatically complete statements that express understanding, explanations, or principles
+- MUST be complete sentences (typically 8+ words with subject + verb + object/complement)
+- Grammatically complete statements expressing understanding, explanations, or principles
 - Examples:
   * "Objectivism holds that rational self-interest is the basis of morality"
-  * "Free market capitalism relies on supply and demand to set prices"
-  * "Neural networks learn by adjusting weights through backpropagation"
   * "Professional jealousy arises when someone's success threatens our self-image"
   * "Loss of a mentor forces individuals to develop independent thinking"
-- Use Concept when: The node expresses a complete idea, definition, or understanding as a full sentence
 - **Concepts MUST have CognitiveLevel nodes** - they represent learned knowledge with depth
+- **Sources**: Highlights/notes, chat conversations, writing project arguments
 
 **Quick Test**:
 - Can it be a Wikipedia article title? → Term
-- Is it a topic/subject phrase but not a complete sentence? → Theme
-- Is it a complete sentence from the article? → Concept
+- Is it a topic/subject phrase but not a complete sentence? → Theme (if chapter-level)
+- Is it a complete sentence? → Concept
 
 **Examples**:
 - ❌ WRONG: "Objectivism" (type: "Concept") with CognitiveLevel
-- ❌ WRONG: "Loss of intellectual mentor" (type: "Concept") with CognitiveLevel
 - ✅ CORRECT: "Objectivism" (type: "Term") - no CognitiveLevel
 - ✅ CORRECT: "Loss of intellectual mentor and self-reinvention" (type: "Theme") - no CognitiveLevel
 - ✅ CORRECT: "Objectivism is Ayn Rand's philosophy based on rational self-interest" (type: "Concept") with CognitiveLevel
-- ✅ CORRECT: "Loss of a mentor forces individuals to develop independent thinking and self-reliance" (type: "Concept") with CognitiveLevel
 
 ### SECONDARY PATTERN: Person Node Extraction
 When you see ANY reference to a person (author, philosopher, scientist, historical figure):

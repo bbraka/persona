@@ -648,14 +648,36 @@ class GraphConstructor:
             logger.info("No nodes extracted from batch data")
             return
 
+        # Theme consolidation handled by two-tier system:
+        # - Tier 1: Similarity merging (automatic during graph save)
+        # - Tier 2: Frequency-based pruning (after ingestion completes)
+
         # Map source_index to metadata and convert to schema Nodes
         schema_nodes = []
         for llm_node in llm_nodes:
             source_idx = getattr(llm_node, 'source_index', None)
 
             # Get metadata for this source
+            # Handle single int, list of ints, or missing source_index
             if source_idx is not None and isinstance(source_idx, int) and source_idx in metadata_mapping:
+                # Single source
                 metadata = metadata_mapping[source_idx]
+            elif source_idx is not None and isinstance(source_idx, list) and len(source_idx) > 0:
+                # Cross-source node (e.g., Theme appearing in multiple chunks)
+                # Use metadata from first source, but accumulate chunk_ids from all sources
+                first_idx = source_idx[0]
+                if first_idx in metadata_mapping:
+                    metadata = metadata_mapping[first_idx].copy()
+                    # Accumulate chunk_ids from all sources
+                    all_chunk_ids = []
+                    for idx in source_idx:
+                        if idx in metadata_mapping and 'chunk_id' in metadata_mapping[idx]:
+                            all_chunk_ids.append(metadata_mapping[idx]['chunk_id'])
+                    if all_chunk_ids:
+                        metadata['chunk_id'] = all_chunk_ids  # Will be converted to chunk_ids array
+                else:
+                    logger.error(f"Node '{llm_node.name}' has source_index {source_idx} but first index {first_idx} not in metadata_mapping, skipping")
+                    continue
             elif source_idx is None:
                 logger.warning(f"Node '{llm_node.name}' missing source_index, using first source")
                 metadata = metadata_mapping[0] if 0 in metadata_mapping else {}
@@ -763,6 +785,10 @@ class GraphConstructor:
 
         graph_context = await self.get_relevant_graph_context(user_id=self.user_id, nodes=[])
         llm_nodes = await get_nodes(text, graph_context)
+
+        # Theme consolidation handled by two-tier system:
+        # - Tier 1: Similarity merging (automatic during graph save)
+        # - Tier 2: Frequency-based pruning (after ingestion completes)
 
         # Extract chunk_ids from metadata (comma-separated string to array)
         chunk_ids_from_metadata = []

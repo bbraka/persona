@@ -281,3 +281,85 @@ async def generate_structured_insights(ask_request: AskRequest, context: str) ->
     except Exception as e:
         logger.error(f"Error in generate_structured_insights: {e}")
         return {k: [] if isinstance(v, list) else {} for k, v in ask_request.output_schema.items()}
+
+
+def validate_theme_ratio(nodes: List[Node], max_ratio: float = 0.10) -> List[Node]:
+    """
+    Enforce Theme:Concept ratio constraint to prevent theme over-extraction.
+
+    This function removes the lowest-confidence Theme nodes if the ratio exceeds
+    the maximum threshold (default 10% as specified in prompt guidelines).
+
+    Args:
+        nodes: List of Node objects from LLM extraction
+        max_ratio: Maximum allowed ratio of Themes to Concepts (default 0.10 = 10%)
+
+    Returns:
+        Filtered list of nodes with excess Themes removed
+
+    Example:
+        - Input: 5 Concepts, 3 Themes (60% ratio)
+        - Output: 5 Concepts, 0 Themes (0% ratio - removed all themes, none met criteria)
+        - Log: "Theme ratio exceeded: 60%. Removing 3 themes"
+    """
+    themes = [n for n in nodes if n.type == "Theme"]
+    concepts = [n for n in nodes if n.type == "Concept"]
+
+    # If no concepts, remove ALL themes (themes need concepts to ground them)
+    if not concepts:
+        if themes:
+            theme_names = [t.name[:50] + "..." if len(t.name) > 50 else t.name for t in themes]
+            logger.warning(
+                f"Removing {len(themes)} theme(s) - no concepts extracted. "
+                f"Themes removed: {theme_names}"
+            )
+        return [n for n in nodes if n.type != "Theme"]
+
+    # Calculate maximum allowed themes (at least 1 if we have 10+ concepts)
+    max_themes = max(0, int(len(concepts) * max_ratio))
+
+    # If within threshold, return unchanged
+    if len(themes) <= max_themes:
+        actual_ratio = (len(themes) / len(concepts) * 100) if concepts else 0
+        if themes:
+            logger.info(
+                f"Theme extraction within limits: {len(themes)} themes / {len(concepts)} concepts = "
+                f"{actual_ratio:.1f}% (target: <{max_ratio*100:.0f}%)"
+            )
+        return nodes
+
+    # Ratio exceeded - need to remove themes
+    # Sort themes by confidence (keep highest confidence themes)
+    themes_with_confidence = []
+    for theme in themes:
+        confidence = 0.5  # default
+        if hasattr(theme, 'confidence') and theme.confidence is not None:
+            confidence = theme.confidence
+        elif theme.properties and 'confidence' in theme.properties:
+            confidence = theme.properties['confidence']
+        themes_with_confidence.append((theme, confidence))
+
+    # Sort by confidence descending
+    themes_with_confidence.sort(key=lambda x: x[1], reverse=True)
+
+    # Keep only max_themes highest confidence themes
+    themes_to_keep = [t for t, c in themes_with_confidence[:max_themes]]
+    themes_to_remove = [t for t, c in themes_with_confidence[max_themes:]]
+
+    actual_ratio = (len(themes) / len(concepts) * 100)
+    target_ratio = (max_themes / len(concepts) * 100) if concepts else 0
+
+    removed_names = [
+        (t.name[:50] + "..." if len(t.name) > 50 else t.name)
+        for t in themes_to_remove
+    ]
+
+    logger.warning(
+        f"Theme ratio exceeded: {len(themes)}/{len(concepts)} = {actual_ratio:.0f}% "
+        f"(target: <{max_ratio*100:.0f}%). "
+        f"Removing {len(themes_to_remove)} theme(s) to reach {target_ratio:.0f}%. "
+        f"Removed: {removed_names}"
+    )
+
+    # Return all non-theme nodes + validated themes
+    return [n for n in nodes if n.type != "Theme" or n in themes_to_keep]
