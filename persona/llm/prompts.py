@@ -285,7 +285,7 @@ When ingesting a **BOOK highlight with a user note**, create exactly 4 interconn
 3. **Concept Node** (type: "Concept")
    - Name: A synthesized FULL SENTENCE combining highlight + note + surrounding context
    - This is the KEY NODE - a complete, standalone statement that captures the knowledge
-   - Example: Highlight "Frank Knight, Henry Simons" + Note "Milton Friedman's advisors" → Concept "Frank Knight and Henry Simons were Milton Friedman's advisors"
+   - Example: Highlight "Professor James Chen, Dr. Sarah Martinez" + Note "Advisor and mentor to Robert Thompson" → Concept "Professor James Chen and Dr. Sarah Martinez were advisors to Robert Thompson"
    - Must be grammatically complete and make sense on its own
    - **IMPORTANT**: Concepts are ALWAYS full sentences or definitions, NOT single words or short phrases
    - Single words/phrases should be extracted as "Term" nodes (see below)
@@ -296,6 +296,17 @@ When ingesting a **BOOK highlight with a user note**, create exactly 4 interconn
    - NOTE: Higher levels mean demonstrated ability, NOT necessarily correctness
    - **IMPORTANT**: Each Concept MUST have its own dedicated CognitiveLevel node
    - NEVER reuse or share CognitiveLevel nodes between different Concepts
+
+5. **Person Node** (type: "Person") - MANDATORY when people are mentioned
+   - Name: FULL NAME of the person (e.g., "Professor James Chen", "Dr. Sarah Martinez", "Elizabeth Bennet")
+   - Extract Person nodes for ALL people mentioned in:
+     - Highlights, user notes, or concepts
+     - Theme names (e.g., "Professor Chen's economic theory" → extract "Professor James Chen")
+     - Author attributions, citations, or references
+   - If only a partial name appears (e.g., "Chen", "Martinez"), infer the full name from context or general knowledge
+   - Use proper capitalization and full names
+   - Person nodes apply to: real people (authors, philosophers, scientists, historical figures) AND fictional characters
+   - **CRITICAL**: Extract Person nodes even for brief mentions - every person reference deserves a node
 
 ### CHAT MESSAGE PATTERN: 2-3 Node Extraction
 
@@ -328,60 +339,79 @@ Look at how the user engaged with the material in their highlight + note combina
   - Concept is just factual recall or recognition (e.g., "X is Y")
   - Simple definition or statement without elaboration
   - User passively highlighted without adding interpretation
-  - Example: "Milton Friedman was an economist"
+  - Example: "Professor James Chen was an economist"
 
 * "Understand" - Concept shows comprehension:
   - Concept includes explanation, paraphrasing, or comparison
   - User demonstrates understanding in their own words
   - Concept shows meaning-making beyond raw facts
-  - Example: "Milton Friedman believed free markets self-regulate better than government intervention"
+  - Example: "Professor Chen believed free markets self-regulate better than government intervention"
 
 * "Apply" - Concept shows practical application:
   - Concept describes using knowledge in a specific context
   - User demonstrates application to solve a problem
   - Shows transfer to new situations or practical usage
-  - Example: "I used Friedman's monetary theory to analyze the 2008 financial crisis"
+  - Example: "I used Professor Chen's monetary theory to analyze the 2008 financial crisis"
 
 * "Analyze" - Concept involves analytical thinking:
   - Concept breaks down components, examines patterns
   - User distinguishes parts and relationships
   - Shows decomposition or systematic examination
-  - Example: "Friedman's theory has three core assumptions: rational actors, perfect information, and no externalities"
+  - Example: "Professor Chen's theory has three core assumptions: rational actors, perfect information, and no externalities"
 
 * "Evaluate" - Concept includes judgment:
   - Concept critiques, assesses, or judges ideas
   - User makes informed judgments with criteria
   - Shows critical evaluation or weighing of merits
-  - Example: "While Friedman's free market theory works in stable economies, it fails to account for systemic crises"
+  - Example: "While Professor Chen's free market theory works in stable economies, it fails to account for systemic crises"
 
 * "Create" - Concept synthesizes new ideas:
   - Concept combines ideas to produce new insights
   - User creates original connections or interpretations
   - Shows creative synthesis or novel perspective
-  - Example: "By combining Friedman's monetary theory with Keynesian fiscal policy, we can create a hybrid crisis response framework"
+  - Example: "By combining Professor Chen's monetary theory with Dr. Martinez's fiscal policy, we can create a hybrid crisis response framework"
+
+**Key Assessment Principles for UserNotes**:
+UserNote content is a PRIMARY indicator of cognitive processing. Pay special attention to:
+
+* **Brief critical notes can indicate HIGH cognitive levels** - A short evaluative comment often shows deeper thinking than a long passive highlight
+* **Evaluative language signals** - Words like "issue", "problem", "flaw", "strength", "wrong", "correct", "better", "worse" indicate judgment (Evaluate level)
+* **Analytical language signals** - Phrases like "because", "therefore", "this shows", "breaks down to", "components are", "pattern is" indicate analysis (Analyze level)
+* **Synthesis language signals** - Words like "combines", "connects", "integrates", "builds on", "brings together" indicate synthesis (Create level)
+* **Application signals** - Phrases like "applies to", "use this for", "in my context", "this explains [real situation]" indicate application (Apply level)
+* **Length ≠ Cognitive Level** - A 5-word critical note ("author's main flaw here") beats a 50-word passive summary
+* **User's interpretation > Highlight length** - When assessing the Concept, prioritize what the USER added (their note) over what they copied (the highlight)
+* **Challenge/critique → Evaluate or higher** - When UserNote challenges, questions, or critiques the source material, this is rarely below "Evaluate"
+* **Pattern recognition → Analyze** - When UserNote identifies patterns, structures, or breaks down components, this is "Analyze" or higher
+* **Cross-context connection → Apply or higher** - When UserNote connects to other situations, books, or real-world contexts, this is "Apply" or higher
 
 **Assessment Guidelines**:
 1. Assess based on what the user DEMONSTRATES in the Concept, not on correctness
 2. Look at the COMBINED information (Highlight + UserNote) that forms the Concept
-3. Higher cognitive levels require explicit evidence - don't over-estimate
-4. When in doubt, default to a lower level (Remember or Understand)
+3. **PRIORITIZE the UserNote** - The user's own words are the strongest signal of cognitive processing
+4. Higher cognitive levels require explicit evidence - don't over-estimate
+5. When in doubt, default to a lower level (Remember or Understand)
+6. **Exception**: If UserNote shows clear critique/analysis/synthesis (even if brief), trust that signal over caution
 
 ### Examples
 
-**EXAMPLE 1 - Remember Level:**
-Input: Highlight "Frank Knight, Henry Simons" + Note "Milton Friedman's advisors"
+**EXAMPLE 1 - Remember Level (Non-Fiction):**
+Input: Highlight "Professor James Chen, Dr. Sarah Martinez" + Note "Advisor and mentor to Robert Thompson"
 
 Cognitive Assessment:
-- Concept formed: "Frank Knight and Henry Simons were Milton Friedman's advisors"
+- Concept formed: "Professor James Chen and Dr. Sarah Martinez were advisors to Robert Thompson"
 - This is simple factual recall - the user is just noting who the advisors were
 - No explanation, analysis, or application demonstrated
 - **CognitiveLevel: "Remember"**
 
 Output nodes:
-1. {"name": "Frank Knight, Henry Simons", "type": "Highlight", "properties": {"discipline": "Economics"}, ...}
-2. {"name": "Milton Friedman's advisors", "type": "UserNote", "properties": {"discipline": "Economics"}, ...}
-3. {"name": "Frank Knight and Henry Simons were Milton Friedman's advisors", "type": "Concept", "properties": {"discipline": "Economics"}, ...}
+1. {"name": "Professor James Chen, Dr. Sarah Martinez", "type": "Highlight", "properties": {"discipline": "Economics"}, ...}
+2. {"name": "Advisor and mentor to Robert Thompson", "type": "UserNote", "properties": {"discipline": "Economics"}, ...}
+3. {"name": "Professor James Chen and Dr. Sarah Martinez were advisors to Robert Thompson", "type": "Concept", "properties": {"discipline": "Economics"}, ...}
 4. {"name": "Remember", "type": "CognitiveLevel", "properties": {"discipline": "Education"}, ...}
+5. {"name": "James Chen", "type": "Person", "properties": {"discipline": "Economics"}, ...}
+6. {"name": "Sarah Martinez", "type": "Person", "properties": {"discipline": "Economics"}, ...}
+7. {"name": "Robert Thompson", "type": "Person", "properties": {"discipline": "Economics"}, ...}
 
 **EXAMPLE 2 - Evaluate Level:**
 Input: Highlight "Free market capitalism" + Note "Works best when information is symmetric and transaction costs are low, but fails during crises when these assumptions break down"
@@ -400,6 +430,43 @@ Output nodes:
 
 These 4 nodes will be connected via relationships (see GET_RELATIONSHIPS for details).
 
+**EXAMPLE 3 - Analyze Level (Fiction):**
+Input: Highlight "Elizabeth struggled between duty to family and desire for independence" + Note "This internal conflict mirrors the broader theme of women's autonomy in the era"
+
+Cognitive Assessment:
+- Concept formed: "Elizabeth's internal conflict between duty and independence reflects broader social tensions around women's autonomy"
+- User breaks down the character's struggle into components (duty vs. independence)
+- User connects individual conflict to broader thematic pattern
+- Shows analytical thinking by identifying relationships and patterns
+- **CognitiveLevel: "Analyze"**
+
+Output nodes:
+1. {"name": "Elizabeth struggled between duty to family and desire for independence", "type": "Highlight", "properties": {"discipline": "Literature"}, ...}
+2. {"name": "This internal conflict mirrors the broader theme of women's autonomy in the era", "type": "UserNote", "properties": {"discipline": "Literature"}, ...}
+3. {"name": "Elizabeth's internal conflict between duty and independence reflects broader social tensions around women's autonomy", "type": "Concept", "properties": {"discipline": "Literature"}, ...}
+4. {"name": "Analyze", "type": "CognitiveLevel", "properties": {"discipline": "Education"}, ...}
+5. {"name": "Elizabeth", "type": "Person", "properties": {"discipline": "Literature"}, ...}
+
+Note: Person node extracted from the character name in the highlight. This applies to both real people and fictional characters.
+
+**EXAMPLE 4 - Brief Evaluative Note (Evaluate Level):**
+Input: Highlight "The author argues that altruism is the highest moral virtue, requiring individuals to sacrifice their interests for others" + Note "Fundamentally wrong - ignores individual rights"
+
+Cognitive Assessment:
+- Concept formed: "The author's claim that altruism is the highest virtue is fundamentally wrong because it ignores individual rights"
+- UserNote is BRIEF (only 6 words) but shows CRITICAL JUDGMENT
+- User challenges the author's core claim with a principled objection
+- The note demonstrates evaluation (critique based on rights framework)
+- **CognitiveLevel: "Evaluate"** (despite brevity - evaluative language trumps length)
+
+Output nodes:
+1. {"name": "The author argues that altruism is the highest moral virtue...", "type": "Highlight", "properties": {"discipline": "Philosophy"}, ...}
+2. {"name": "Fundamentally wrong - ignores individual rights", "type": "UserNote", "properties": {"discipline": "Philosophy"}, ...}
+3. {"name": "The author's claim that altruism is the highest virtue is fundamentally wrong because it ignores individual rights", "type": "Concept", "properties": {"discipline": "Philosophy"}, ...}
+4. {"name": "Evaluate", "type": "CognitiveLevel", "properties": {"discipline": "Education"}, ...}
+
+Key lesson: Brief critical notes can indicate high cognitive levels. The UserNote "Fundamentally wrong - ignores individual rights" is only 6 words but clearly demonstrates evaluative thinking.
+
 ### IMPORTANT: Term vs Theme vs Concept Distinction
 
 **Term nodes** (type: "Term"):
@@ -414,6 +481,11 @@ These 4 nodes will be connected via relationships (see GET_RELATIONSHIPS for det
 - Examples: "Transformation through suffering", "Loss of intellectual mentor and self-reinvention"
 - **Themes do NOT get CognitiveLevel nodes** - they are subjects/topics, not learned concepts
 - **Sources**: Book reading chunks (chapter-level topics), Writing projects (evidence/proof patterns)
+- **IMPORTANT - Theme → Person Extraction**: If a Theme mentions a person or character, ALSO extract a separate Person node
+  - Example 1 (Fiction): Theme "Elizabeth Bennet's character development" → ALSO extract Person node "Elizabeth Bennet"
+  - Example 2 (Non-Fiction): Theme "Professor Chen's economic theory" → ALSO extract Person node "Professor Chen"
+  - Example 3 (Non-Fiction): Theme "Dr. Martinez's critique of behavioral economics" → ALSO extract Person node "Dr. Martinez"
+  - This applies to both real people (economists, philosophers, scientists) and fictional characters
 
 **Concept nodes** (type: "Concept"):
 - MUST be complete sentences (typically 8+ words with subject + verb + object/complement)
@@ -434,18 +506,7 @@ These 4 nodes will be connected via relationships (see GET_RELATIONSHIPS for det
 - ❌ WRONG: "Objectivism" (type: "Concept") with CognitiveLevel
 - ✅ CORRECT: "Objectivism" (type: "Term") - no CognitiveLevel
 - ✅ CORRECT: "Loss of intellectual mentor and self-reinvention" (type: "Theme") - no CognitiveLevel
-- ✅ CORRECT: "Objectivism is Ayn Rand's philosophy based on rational self-interest" (type: "Concept") with CognitiveLevel
-
-### SECONDARY PATTERN: Person Node Extraction
-When you see ANY reference to a person (author, philosopher, scientist, historical figure):
-1. EXTRACT A PERSON NODE using their FULL NAME (e.g., "Ayn Rand", "Albert Einstein", "Karl Marx")
-2. Use node type "Person" (NOT Author/Philosopher/Scientist)
-3. If only a partial name appears (e.g., "Rand", "Einstein"), infer the full name from context or existing graph
-4. Person nodes are MANDATORY - extract even if the person is only mentioned briefly
-5. Examples:
-   - "Rand's philosophy" → Extract node: "Ayn Rand" (type: Person)
-   - "According to Marx" → Extract node: "Karl Marx" (type: Person)
-   - "Einstein's theory" → Extract node: "Albert Einstein" (type: Person)
+- ✅ CORRECT: "Rational individualism is Dr. Thompson's philosophy based on rational self-interest" (type: "Concept") with CognitiveLevel
 
 For each entity or concept in the text, create an individual node with:
 - Name: Concise identifier for the entity (MUST be noun/noun phrase, not contain verbs like 'versus', 'between', 'and' unless it's a universal archetype)
@@ -525,6 +586,22 @@ Avoid:
    - Minor side characters who don't transcend their story ("Caderousse's neighbor")
    - Plot mechanics without deeper meaning ("Character X goes to location Y")
    - Overly specific phrases that can't generalize ("Questioning shipowner's honesty about Elba delays")
+
+### Person Extraction Checklist
+
+Before finalizing your response, verify you have extracted Person nodes for:
+- ✓ All people mentioned in highlights or user notes
+- ✓ All people mentioned in concepts or themes
+- ✓ All authors, philosophers, scientists, or historical figures referenced
+- ✓ All fictional characters from literature (if culturally significant)
+- ✓ Any person whose name appears in a Theme name (extract both the Theme AND the Person)
+
+**Examples requiring Person extraction:**
+- Highlight mentions "Professor Thompson" → Extract "Professor Thompson"
+- Theme: "Dr. Chen's economic theory" → Extract Theme AND Person node "Dr. Chen"
+- Concept: "Dr. Martinez argued that..." → Extract Person node "Dr. Martinez"
+- UserNote: "like what Professor Wilson said" → Extract Person node "Professor Wilson"
+- Fiction: "Elizabeth's internal conflict" → Extract Person node "Elizabeth"
 
 Example Response Format for BOOK CONTENT (The Count of Monte Cristo):
 NOTE: chunk_ids VALIDATION REQUIRED
@@ -788,9 +865,9 @@ Guidelines for Creating Relationships:
       - UserNote SYNTHESIZED_INTO Concept
 
       Example with nodes:
-      - Node1: "Frank Knight, Henry Simons" (type: Highlight)
-      - Node2: "Milton Friedman's advisors" (type: UserNote)
-      - Node3: "Frank Knight and Henry Simons were Milton Friedman's advisors" (type: Concept)
+      - Node1: "Professor James Chen, Dr. Sarah Martinez" (type: Highlight)
+      - Node2: "Advisor and mentor to Robert Thompson" (type: UserNote)
+      - Node3: "Professor James Chen and Dr. Sarah Martinez were advisors to Robert Thompson" (type: Concept)
 
       Relationships:
       - Node1 SYNTHESIZED_INTO Node3
@@ -825,21 +902,21 @@ Guidelines for Creating Relationships:
       - Example: "Objectivism concept" ENCOUNTERED_IN "Page 47 of Atlas Shrugged"
 
    c) Person Attribution - ALWAYS CREATE THESE PATTERNS:
-      - When you see "Rand's philosophy" or possessive forms:
-        * Extract Person node: "Ayn Rand"
-        * Extract concept node: "Rand's philosophy" or "Objectivism"
-        * Relationship: "Rand's philosophy" ATTRIBUTED_TO "Ayn Rand"
-        * Relationship: "Objectivism" CREATED_BY "Ayn Rand"
-      - When you see "according to Rand" or attribution phrases:
-        * Extract Person node: "Ayn Rand"
+      - When you see "Chen's theory" or possessive forms:
+        * Extract Person node: "Professor James Chen"
+        * Extract concept node: "Chen's theory" or the specific theory name
+        * Relationship: "Chen's theory" ATTRIBUTED_TO "Professor James Chen"
+        * Relationship: "Rational individualism" CREATED_BY "Professor James Chen"
+      - When you see "according to Chen" or attribution phrases:
+        * Extract Person node: "Professor James Chen"
         * Extract concept node from what they said
-        * Relationship: concept ATTRIBUTED_TO "Ayn Rand"
+        * Relationship: concept ATTRIBUTED_TO "Professor James Chen"
       - CRITICAL: The Person node with FULL NAME must ALWAYS be created when any person is mentioned
 
    d) Connect to Existing Person Nodes:
       - BEFORE creating a new Person node, check if that person already exists in the graph context
-      - If "Ayn Rand" exists in the graph, use that exact name for relationships
-      - If you see duplicate person nodes (e.g., "Ayn Rand" as Author and as Philosopher), treat them as the SAME person
+      - If "Professor James Chen" exists in the graph, use that exact name for relationships
+      - If you see duplicate person nodes (e.g., "Professor Chen" as Author and as Economist), treat them as the SAME person
       - Always prefer connecting to an existing Person node over creating a new one
 
    e) **Theme-Concept-Person-Event Connectivity - HIGHEST PRIORITY**:
@@ -866,8 +943,8 @@ Guidelines for Creating Relationships:
       2. Theme → Person connections:
          - When a Theme is associated with a person's work, life, or ideas
          - Use RELATED_TO, ATTRIBUTED_TO, ASSOCIATED_WITH
-         - Example: "Self-reinvention after career shift" (Theme) RELATED_TO "Milton Friedman" (Person)
-         - Example: "Free market advocacy" (Theme) ATTRIBUTED_TO "Ayn Rand" (Person)
+         - Example: "Self-reinvention after career shift" (Theme) RELATED_TO "Professor James Chen" (Person)
+         - Example: "Free market advocacy" (Theme) ATTRIBUTED_TO "Dr. Sarah Martinez" (Person)
 
       3. Theme → Event connections:
          - When a Theme is related to a historical or significant event
@@ -878,7 +955,7 @@ Guidelines for Creating Relationships:
       4. Concept → Person connections:
          - When a Concept is created by, advocated by, or attributed to a person
          - Use CREATED_BY, ATTRIBUTED_TO, ADVOCATED_BY, CRITICIZED_BY
-         - Example: "Rational self-interest is the basis of morality" (Concept) ATTRIBUTED_TO "Ayn Rand" (Person)
+         - Example: "Rational self-interest is the basis of economic behavior" (Concept) ATTRIBUTED_TO "Professor James Chen" (Person)
 
       5. Concept → Event connections:
          - When a Concept relates to or arose from an event
@@ -888,8 +965,8 @@ Guidelines for Creating Relationships:
       6. Cross-type semantic relationships:
          - Look for ANY meaningful semantic connection between different node types
          - Use RELATED_TO as a general connector when a more specific relationship isn't clear
-         - Example: "Chicago School" (Term) RELATED_TO "Milton Friedman" (Person)
-         - Example: "University of Chicago" (Location) ASSOCIATED_WITH "Chicago School" (Term)
+         - Example: "Free Market Theory" (Term) RELATED_TO "Professor James Chen" (Person)
+         - Example: "University of Chicago" (Location) ASSOCIATED_WITH "Free Market Theory" (Term)
 
       **IMPORTANT**: Be LIBERAL with these cross-type connections. If two nodes seem related when reading
       them together, CREATE THE RELATIONSHIP. It's better to have too many semantic connections than too few.
@@ -937,6 +1014,95 @@ SELF-LOOP PREVENTION (CRITICAL):
 - A node CANNOT have a relationship with itself
 - Example of FORBIDDEN relationship: {"source_id": "Node1", "relation": "RELATES_TO", "target_id": "Node1"}
 - Before adding any relationship, verify source_id ≠ target_id
+- Self-loops are meaningless and will be rejected
+"""
+
+DETECT_CONTRASTS = """
+You are an expert in philosophy, argumentation, and conceptual analysis. Your task is to identify **semantic relationships** between new concepts and existing concepts in a knowledge graph, with special focus on finding **contrasting, opposing, or challenging** relationships that vector similarity alone would miss.
+
+**Input**:
+- New Concepts: List of newly ingested concept nodes
+- Candidate Concepts: Existing concepts that may be semantically related (including through opposition/contrast)
+
+**Your Task**:
+Identify ALL meaningful relationships between new and existing concepts, including:
+1. **Contrasting/Opposing** relationships (philosophical opposites, contradictions)
+2. **Supporting/Aligned** relationships (similar viewpoints, complementary ideas)
+3. **Challenging** relationships (one concept questions or tests another)
+4. **General semantic** relationships (topically related, even if not similar)
+
+**Important Guidelines**:
+- **Contrasts are just as important as similarities** - actively look for philosophical oppositions
+- Concepts don't need similar wording to be related - "altruism" and "individualism" are clearly related through opposition
+- Consider the **discipline/domain** - concepts in the same field are likely related even if they describe opposite positions
+- Be **liberal** with relationship creation - it's better to over-connect than under-connect
+- A concept and its opposite are **highly related** semantically (they address the same topic from different angles)
+
+**Examples of Contrasting Relationships**:
+- "altruism is collectivism" CONTRASTS_WITH "individualism"
+- "central planning" OPPOSES "free market economics"
+- "egalitarianism" CONTRASTS_WITH "meritocracy"
+- "keynesian economics" OPPOSES "austrian economics"
+- "moral relativism" CONTRASTS_WITH "moral absolutism"
+
+**Relationship Types to Use**:
+
+**For Opposing/Contrasting Concepts**:
+- CONTRASTS_WITH: Concepts represent opposite viewpoints or contradictory positions
+- OPPOSES / ARGUES_AGAINST: One concept directly contradicts or opposes another
+- CHALLENGES: One concept questions or tests the validity of another
+- REFUTES: One concept provides evidence against another
+
+**For Supporting/Aligned Concepts**:
+- SUPPORTS: One concept provides evidence or support for another
+- SIMILAR_TO: Concepts share similar properties or viewpoints
+- RELATED_TO: General semantic connection (use liberally)
+- ELABORATES_ON: One concept expands on another
+- BUILDS_ON: One concept extends another
+- REINFORCES: One concept strengthens another
+
+**For Other Semantic Relationships**:
+- APPLIES_TO: One concept is an application of another
+- EXEMPLIFIES: One concept is an example of another
+- COMPARES_TO: Concepts are being compared (neutral comparison)
+- INFLUENCES: One concept has influenced another
+- ATTRIBUTED_TO: Concept is attributed to a person/school of thought
+
+**Output Format**:
+Return a JSON array of relationships. Each relationship must have:
+- source: Name of the NEW concept (exactly as provided)
+- target: Name of the EXISTING concept (exactly as provided)
+- relation: Relationship type from the list above
+
+Example:
+```json
+{
+  "relationships": [
+    {
+      "source": "altruism is collectivism",
+      "target": "individualism",
+      "relation": "CONTRASTS_WITH"
+    },
+    {
+      "source": "altruism is collectivism",
+      "target": "libertarianism",
+      "relation": "OPPOSES"
+    },
+    {
+      "source": "altruism is collectivism",
+      "target": "classical liberalism",
+      "relation": "CONTRASTS_WITH"
+    }
+  ]
+}
+```
+
+**Critical Rules**:
+- Only create relationships between provided new concepts and candidate concepts
+- Do NOT create relationships between two new concepts (that happens elsewhere)
+- Do NOT create relationships between two existing concepts
+- Use exact node names from the input
+- Return empty array if no meaningful relationships exist
 - Self-loops are meaningless and will be rejected
 """
 

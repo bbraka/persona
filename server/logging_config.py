@@ -2,7 +2,7 @@ import logging
 import sys
 from typing import Optional
 
-def setup_logging(log_level: str = "INFO", log_file: Optional[str] = None) -> None:
+def setup_logging(log_level: str = "WARNING", log_file: Optional[str] = None) -> None:
     """
     Setup centralized logging configuration for the Persona application.
     

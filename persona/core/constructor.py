@@ -71,6 +71,16 @@ class GraphConstructor:
             relationships.extend(book_relationships)
             logger.info(f"Created {len(book_relationships)} book-scoped relationships for book {book_id}")
 
+        # Phase 4: Contrast/semantic relationships (finds philosophical opposites and debates)
+        logger.info(f"Phase 4 check: book_ids={book_ids}, has_context={bool(book_ids)}")
+        if book_ids:  # Only run if we have book context
+            logger.info(f"Phase 4: Calling generate_contrast_relationships with {len(nodes)} nodes and book_ids={book_ids}")
+            contrast_relationships = await self.generate_contrast_relationships(nodes, book_ids)
+            relationships.extend(contrast_relationships)
+            logger.info(f"Created {len(contrast_relationships)} contrast/semantic relationships")
+        else:
+            logger.warning("Phase 4: Skipped - no book_ids provided")
+
         return relationships
 
     def _nodes_to_node_models(self, nodes: List[Node], embeddings: List[List[float]]) -> List[NodeModel]:
@@ -544,11 +554,25 @@ class GraphConstructor:
 
         # Convert relationships (include both LLM-generated and system-managed relationships)
         all_relationships = llm_relationships + cognitive_relationships + highlight_usernote_relationships
+
+        # Filter out self-referencing relationships (where source == target)
+        valid_relationships = []
+        self_ref_count = 0
+        for rel in all_relationships:
+            if rel.source == rel.target:
+                logger.warning(f"Filtering out self-referencing relationship: '{rel.source}' {rel.relation} '{rel.target}'")
+                self_ref_count += 1
+            else:
+                valid_relationships.append(rel)
+
+        if self_ref_count > 0:
+            logger.warning(f"Filtered out {self_ref_count} self-referencing relationship(s)")
+
         relationship_models = [RelationshipModel(
             source=rel.source,
             target=rel.target,
             relation=rel.relation
-        ) for rel in all_relationships]
+        ) for rel in valid_relationships]
 
         graph_update = NodesAndRelationshipsResponse(
             nodes=node_models,
@@ -559,6 +583,11 @@ class GraphConstructor:
         try:
             await self.graph_ops.update_graph_transactional(graph_update, self.user_id)
             logger.info(f"Successfully saved {len(node_models)} nodes and {len(relationship_models)} relationships")
+
+            # After successful save and merging, cleanup self-referencing relationships
+            deleted_count = await self.graph_ops.neo4j_manager.delete_self_referencing_relationships(self.user_id)
+            if deleted_count > 0:
+                logger.info(f"Cleaned up {deleted_count} self-referencing relationship(s)")
 
             # After successful save, recalculate bloom levels for all Concept nodes
             concept_names = [node.name for node in nodes if node.type == "Concept"]
@@ -694,8 +723,16 @@ class GraphConstructor:
         for item in data_items:
             if item.metadata and 'book_id' in item.metadata:
                 try:
-                    book_ids.add(int(item.metadata['book_id']))
-                except (ValueError, TypeError):
+                    book_id_value = item.metadata['book_id']
+                    # Handle case where book_id might be a list
+                    if isinstance(book_id_value, list):
+                        if book_id_value:  # Non-empty list
+                            book_ids.add(int(book_id_value[0]))
+                            logger.warning(f"book_id was a list: {book_id_value}, using first element: {book_id_value[0]}")
+                    else:
+                        book_ids.add(int(book_id_value))
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Failed to parse book_id from metadata: {item.metadata.get('book_id')}, error: {e}")
                     pass
 
         # Generate relationships
@@ -723,9 +760,19 @@ class GraphConstructor:
         book_ids = set()
         if data.metadata and 'book_id' in data.metadata:
             try:
-                book_ids.add(int(data.metadata['book_id']))
-            except (ValueError, TypeError):
+                book_id_value = data.metadata['book_id']
+                # Handle case where book_id might be a list
+                if isinstance(book_id_value, list):
+                    if book_id_value:  # Non-empty list
+                        book_ids.add(int(book_id_value[0]))
+                        logger.warning(f"book_id was a list: {book_id_value}, using first element: {book_id_value[0]}")
+                else:
+                    book_ids.add(int(book_id_value))
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Failed to parse book_id from metadata: {data.metadata.get('book_id')}, error: {e}")
                 pass
+
+        logger.info(f"Collected book_ids: {book_ids} for relationship generation")
 
         # Generate relationships
         relationships = await self._generate_all_relationships(new_nodes, text, book_ids)
@@ -837,6 +884,14 @@ class GraphConstructor:
         # Convert LLM nodes to schema nodes, applying IDs from metadata
         nodes = []
         for node in llm_nodes:
+            # Skip UserNote nodes that are empty or placeholders
+            if node.type == "UserNote":
+                node_name_lower = node.name.lower().strip()
+                if (not node.name.strip() or
+                    node_name_lower in ["no user note provided", "no note", "none", "n/a"]):
+                    logger.warning(f"Skipping empty/placeholder UserNote node: '{node.name}'")
+                    continue
+
             llm_book_id = getattr(node, 'book_id', [])
             final_book_id = llm_book_id or book_ids
 
@@ -899,10 +954,11 @@ class GraphConstructor:
         node_texts = [node.name for node in new_nodes]
         embeddings = generate_embeddings(node_texts)
 
-        # For each new node, find related nodes from the same book
-        for idx, (node, embedding) in enumerate(zip(new_nodes, embeddings)):
+        # OPTIMIZATION: Prepare all LLM tasks for parallel execution
+        async def process_single_node(node: Node, embedding) -> List[Relationship]:
+            """Process a single node and return its relationships"""
             if not embedding:
-                continue
+                return []
 
             try:
                 # Vector search filtered by book_id
@@ -914,7 +970,7 @@ class GraphConstructor:
                 )
 
                 if not similar_nodes:
-                    continue
+                    return []
 
                 # Filter to meaningful similarity (lower threshold for same book)
                 # Also exclude the node itself if it was already created
@@ -924,25 +980,278 @@ class GraphConstructor:
                 ]
 
                 if not relevant_nodes:
-                    continue
+                    return []
 
                 # Format context for LLM to generate appropriate relationships
                 context = self._format_nodes_for_context(relevant_nodes)
 
                 # Use LLM to generate relationships with the same-book context
                 node_relationships = await self.generate_cross_relationships([node], context)
-                relationships.extend(node_relationships)
 
                 logger.debug(
                     f"Found {len(node_relationships)} book-scoped relationships for node '{node.name}' "
                     f"(book_id: {book_id}, similar nodes: {len(relevant_nodes)})"
                 )
+                return node_relationships
 
             except Exception as e:
                 logger.warning(f"Error finding book-scoped relationships for node '{node.name}': {e}")
-                continue
+                return []
+
+        # Execute all LLM calls in parallel
+        import asyncio
+        tasks = [process_single_node(node, embedding) for node, embedding in zip(new_nodes, embeddings)]
+        all_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Flatten results and handle exceptions
+        for result in all_results:
+            if isinstance(result, Exception):
+                logger.warning(f"Task failed with exception: {result}")
+            elif isinstance(result, list) and result:
+                relationships.extend(result)
 
         return relationships
+
+    async def generate_contrast_relationships(self, new_nodes: List[Node], book_ids: set[int]) -> List[Relationship]:
+        """
+        Generate relationships with existing concepts by detecting both similarities AND contrasts/oppositions.
+
+        This method specifically targets concepts that vector similarity alone would miss:
+        - Philosophical opposites (e.g., "individualism" vs "collectivism")
+        - Contrasting viewpoints (e.g., "free market" vs "central planning")
+        - Concepts in the same domain but with different positions
+
+        Strategy:
+        1. For each new Concept node, find candidates via:
+           - Mid-range vector similarity (0.40-0.69) - not too similar, not unrelated
+           - OR same discipline (regardless of similarity score)
+           - Filtered by book_id to stay contextually relevant
+        2. Pass candidates to LLM with specialized contrast-detection prompt
+        3. LLM identifies: CONTRASTS_WITH, OPPOSES, SUPPORTS, CHALLENGES, RELATED_TO
+
+        Args:
+            new_nodes: Newly extracted nodes
+            book_ids: Set of book IDs to search within
+
+        Returns:
+            List of relationships including contrasting/opposing connections
+        """
+        if self.graph_ops is None:
+            raise RuntimeError("GraphConstructor must be used as an async context manager")
+
+        # Only apply to Concept nodes (not Theme, Person, etc.)
+        concept_nodes = [n for n in new_nodes if n.type == "Concept"]
+        if not concept_nodes:
+            logger.info("Phase 4: No Concept nodes to process for contrast detection")
+            return []
+
+        logger.info(f"Phase 4: Starting contrast detection for {len(concept_nodes)} Concept node(s)")
+        relationships = []
+
+        # Generate embeddings for all concept nodes
+        node_texts = [node.name for node in concept_nodes]
+        embeddings = generate_embeddings(node_texts)
+
+        # OPTIMIZATION: Prepare all LLM tasks for parallel execution
+        async def process_single_contrast(book_id: int, node: Node, embedding) -> List[Relationship]:
+            """Process a single node for contrast detection and return relationships"""
+            if not embedding:
+                logger.debug(f"Phase 4: Skipping node '{node.name[:50]}...' - no embedding")
+                return []
+
+            try:
+                logger.debug(f"Phase 4: Searching candidates for '{node.name[:60]}...' (book_id: {book_id})")
+                # Vector search filtered by book_id
+                similar_nodes = await self.graph_ops.neo4j_manager.query_text_similarity(
+                    keyword_embedding=embedding,
+                    user_id=self.user_id,
+                    book_id=book_id,
+                    limit=30  # Get more candidates for contrast detection
+                )
+
+                logger.info(f"Phase 4: Found {len(similar_nodes) if similar_nodes else 0} similar nodes for '{node.name[:60]}...'")
+
+                if not similar_nodes:
+                    return []
+
+                # Filter candidates for contrast detection:
+                # 1. Mid-range similarity (0.40-0.69) - potentially contrasting
+                # 2. OR same discipline (concepts in same field often have opposing views)
+                # 3. Exclude very high similarity (>= 0.70) - those are handled by book-scoped relationships
+                # 4. Exclude very low similarity (< 0.40) - likely unrelated
+                # 5. Exclude the node itself
+
+                node_discipline = getattr(node, 'discipline', None) or node.properties.get('discipline') if hasattr(node, 'properties') else None
+
+                candidate_nodes = []
+                for n in similar_nodes:
+                    score = n.get('score', 0.0)
+                    node_name = n.get('nodeName', '')
+                    candidate_discipline = n.get('discipline')
+
+                    # Skip self and very high similarity (handled elsewhere)
+                    if node_name == node.name or score >= 0.70:
+                        continue
+
+                    # Include if mid-range similarity OR related discipline
+                    in_mid_range = 0.40 <= score < 0.70
+
+                    # Calculate discipline similarity (fuzzy matching)
+                    related_discipline = False
+                    if node_discipline and candidate_discipline and score >= 0.30:
+                        related_discipline = self._disciplines_are_related(
+                            node_discipline,
+                            candidate_discipline
+                        )
+
+                    if in_mid_range or related_discipline:
+                        candidate_nodes.append(n)
+
+                # Limit to top 15 candidates to control LLM costs
+                candidate_nodes = candidate_nodes[:15]
+
+                logger.info(
+                    f"Phase 4: After filtering, {len(candidate_nodes)} candidates remain for '{node.name[:60]}...'"
+                )
+                if candidate_nodes:
+                    # Log sample of candidates with their scores
+                    sample_candidates = candidate_nodes[:3]
+                    for cand in sample_candidates:
+                        logger.debug(
+                            f"  Candidate: '{cand.get('nodeName', '')[:50]}...' "
+                            f"(score: {cand.get('score', 0.0):.3f}, discipline: {cand.get('discipline', 'N/A')})"
+                        )
+
+                if not candidate_nodes:
+                    return []
+
+                # Format candidates for LLM
+                candidates_str = self._format_candidates_for_contrast_detection(candidate_nodes)
+
+                # Call LLM with specialized contrast detection prompt
+                from persona.llm.llm_graph import detect_contrasts
+                contrast_relationships = await detect_contrasts([node], candidates_str)
+
+                logger.debug(
+                    f"Found {len(contrast_relationships)} contrast/semantic relationships for '{node.name}' "
+                    f"(book_id: {book_id}, candidates: {len(candidate_nodes)})"
+                )
+                return contrast_relationships
+
+            except Exception as e:
+                logger.warning(f"Error finding contrast relationships for node '{node.name}': {e}")
+                return []
+
+        # Execute all LLM calls in parallel (across all book_id × concept combinations)
+        import asyncio
+        tasks = []
+        for book_id in book_ids:
+            logger.info(f"Phase 4: Processing book_id {book_id}")
+            for node, embedding in zip(concept_nodes, embeddings):
+                tasks.append(process_single_contrast(book_id, node, embedding))
+
+        all_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Flatten results and handle exceptions
+        for result in all_results:
+            if isinstance(result, Exception):
+                logger.warning(f"Contrast detection task failed with exception: {result}")
+            elif isinstance(result, list) and result:
+                relationships.extend(result)
+
+        return relationships
+
+    def _disciplines_are_related(self, discipline1: str, discipline2: str) -> bool:
+        """
+        Check if two disciplines are related using fuzzy string matching.
+
+        This allows matching of related disciplines like:
+        - "Philosophy" and "Political Philosophy"
+        - "Economics" and "Behavioral Economics"
+        - "Psychology" and "Cognitive Psychology"
+
+        Args:
+            discipline1: First discipline string
+            discipline2: Second discipline string
+
+        Returns:
+            True if disciplines are related (similar enough), False otherwise
+        """
+        if not discipline1 or not discipline2:
+            return False
+
+        # Exact match
+        if discipline1 == discipline2:
+            return True
+
+        # Normalize: lowercase and remove common words
+        def normalize(d: str) -> set:
+            """Extract significant words from discipline name"""
+            d_lower = d.lower()
+            # Remove common modifiers that don't change the core discipline
+            stopwords = {'and', 'of', 'the', 'a', 'an', 'in'}
+            words = set(d_lower.split()) - stopwords
+            return words
+
+        words1 = normalize(discipline1)
+        words2 = normalize(discipline2)
+
+        # Check for word overlap (e.g., "Philosophy" in "Political Philosophy")
+        # At least one significant word must overlap
+        overlap = words1 & words2
+        if overlap:
+            return True
+
+        # Check if one discipline is a substring of another
+        # (e.g., "Economy" in "Political Economy")
+        if discipline1.lower() in discipline2.lower() or discipline2.lower() in discipline1.lower():
+            return True
+
+        # Check for common discipline families with fuzzy matching
+        discipline_families = [
+            {'philosophy', 'ethics', 'political philosophy', 'moral philosophy', 'metaphysics'},
+            {'economics', 'political economy', 'behavioral economics', 'microeconomics', 'macroeconomics'},
+            {'psychology', 'cognitive psychology', 'behavioral psychology', 'social psychology'},
+            {'sociology', 'social science', 'political science'},
+            {'history', 'political history', 'social history', 'economic history'},
+            {'science', 'natural science', 'physical science', 'life science'},
+            {'mathematics', 'statistics', 'applied mathematics'},
+            {'literature', 'literary studies', 'comparative literature', 'creative writing'},
+        ]
+
+        d1_lower = discipline1.lower()
+        d2_lower = discipline2.lower()
+
+        for family in discipline_families:
+            # Check if both disciplines belong to the same family
+            in_family_1 = any(d in d1_lower for d in family)
+            in_family_2 = any(d in d2_lower for d in family)
+            if in_family_1 and in_family_2:
+                return True
+
+        return False
+
+    def _format_candidates_for_contrast_detection(self, nodes: List[Dict[str, Any]]) -> str:
+        """
+        Format candidate nodes for contrast detection prompt.
+
+        Args:
+            nodes: List of node dicts from vector search
+
+        Returns:
+            Formatted string listing candidate concepts
+        """
+        if not nodes:
+            return ""
+
+        context_parts = ["Candidate Concepts (may be related through similarity OR contrast):\n"]
+        for i, node in enumerate(nodes, 1):
+            node_name = node.get('nodeName', 'Unknown')
+            score = node.get('score', 0.0)
+            discipline = node.get('discipline', 'Unknown')
+            context_parts.append(f"{i}. \"{node_name}\" (discipline: {discipline}, similarity: {score:.2f})")
+
+        return "\n".join(context_parts)
 
     def _format_nodes_for_context(self, nodes: List[Dict[str, Any]]) -> str:
         """

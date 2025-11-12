@@ -3,6 +3,7 @@ OpenAI LLM client implementation.
 """
 
 import openai
+import httpx
 from typing import List, Dict, Any, Optional
 from .base import BaseLLMClient, ChatMessage, ChatResponse
 from server.logging_config import get_logger
@@ -12,15 +13,27 @@ logger = get_logger(__name__)
 
 class OpenAIClient(BaseLLMClient):
     """OpenAI LLM client"""
-    
+
     def __init__(self, api_key: str, chat_model: str = "gpt-4o-mini", embedding_model: str = "text-embedding-3-small", **kwargs):
         super().__init__(model_name=chat_model, embedding_model=embedding_model, **kwargs)
         self.api_key = api_key
         self.chat_model = chat_model
         self.embedding_model = embedding_model
-        
-        # Initialize clients
-        self.async_client = openai.AsyncOpenAI(api_key=api_key)
+
+        # OPTIMIZATION: Configure HTTP client with higher connection limits for parallel requests
+        http_client = httpx.AsyncClient(
+            limits=httpx.Limits(
+                max_connections=100,  # Total connection pool size
+                max_keepalive_connections=20,  # Keep-alive connections
+            ),
+            timeout=httpx.Timeout(60.0, connect=10.0)  # 60s timeout, 10s connect timeout
+        )
+
+        # Initialize clients with optimized HTTP client
+        self.async_client = openai.AsyncOpenAI(
+            api_key=api_key,
+            http_client=http_client
+        )
         self.sync_client = openai.OpenAI(api_key=api_key)
     
     async def chat(
@@ -100,16 +113,48 @@ class OpenAIClient(BaseLLMClient):
         if not texts:
             return []
 
+        # Filter out empty strings, None values, and whitespace-only strings
+        # Keep track of original indices for alignment
+        valid_indices = []
+        valid_texts = []
+        filtered_count = 0
+
+        for i, text in enumerate(texts):
+            if text and isinstance(text, str) and text.strip():
+                valid_indices.append(i)
+                valid_texts.append(text)
+            else:
+                filtered_count += 1
+
+        # Log warning if any texts were filtered
+        if filtered_count > 0:
+            logger.warning(
+                f"Filtered {filtered_count} invalid text(s) from embedding batch "
+                f"(empty strings, None values, or whitespace-only). "
+                f"Valid texts: {len(valid_texts)}/{len(texts)}"
+            )
+
+        # If all texts were invalid, return empty embeddings for all
+        if not valid_texts:
+            logger.warning("All texts were empty or invalid, returning empty embeddings")
+            return [[] for _ in texts]
+
         try:
             # Use sync client for embeddings as it's more stable
             response = self.sync_client.embeddings.create(
-                input=texts,
+                input=valid_texts,
                 model=self.embedding_model,
                 dimensions=1536,
                 **kwargs
             )
 
-            return [data.embedding for data in response.data]
+            # Map embeddings back to original indices
+            embeddings = [[] for _ in texts]  # Initialize with empty embeddings
+            for i, embedding_data in enumerate(response.data):
+                original_idx = valid_indices[i]
+                embeddings[original_idx] = embedding_data.embedding
+
+            return embeddings
 
         except openai.APIStatusError as e:
             error_msg = f"OpenAI embeddings error: {e}"

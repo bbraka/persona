@@ -1,6 +1,6 @@
 import json
 from typing import List, Optional, Tuple, Dict, Any
-from persona.llm.prompts import GET_NODES, GET_RELATIONSHIPS, GENERATE_COMMUNITIES, GENERATE_STRUCTURED_INSIGHTS
+from persona.llm.prompts import GET_NODES, GET_RELATIONSHIPS, DETECT_CONTRASTS, GENERATE_COMMUNITIES, GENERATE_STRUCTURED_INSIGHTS
 from persona.models.schema import EntityExtractionResponse, NodesAndRelationshipsResponse, CommunityStructure, AskResponse, AskRequest, create_dynamic_schema
 from pydantic import BaseModel, Field, field_validator, model_validator
 from persona.utils.instructions_reader import INSTRUCTIONS
@@ -160,6 +160,73 @@ async def get_relationships(nodes: List[Node], graph_context: str) -> Tuple[List
     except Exception as e:
         logger.error(f"Error while generating relationships: {e}")
         return [], {}
+
+async def detect_contrasts(new_nodes: List[Node], candidates_context: str) -> List[Relationship]:
+    """
+    Detect semantic relationships (including contrasts/oppositions) between new concepts and existing candidates.
+
+    This function uses a specialized prompt to find:
+    - Contrasting/opposing concepts (CONTRASTS_WITH, OPPOSES, CHALLENGES)
+    - Supporting concepts (SUPPORTS, SIMILAR_TO, REINFORCES)
+    - Other semantic relationships (RELATED_TO, APPLIES_TO, etc.)
+
+    Args:
+        new_nodes: List of new Node objects to analyze
+        candidates_context: Formatted string of candidate concepts from vector search
+
+    Returns:
+        List of Relationship objects
+    """
+    if not new_nodes:
+        return []
+
+    # Format new concepts for the prompt
+    new_concepts_str = '\n'.join([f'- "{node.name}"' for node in new_nodes])
+
+    combined_prompt = f"""
+{DETECT_CONTRASTS}
+
+**New Concepts**:
+{new_concepts_str}
+
+{candidates_context}
+
+Please analyze these concepts and return ALL meaningful relationships in JSON format.
+"""
+
+    try:
+        messages = [
+            ChatMessage(role="system", content=f"App Objective: {INSTRUCTIONS}"),
+            ChatMessage(role="user", content=combined_prompt)
+        ]
+
+        client = get_chat_client()
+
+        # Build kwargs, only include temperature if configured
+        kwargs = {"messages": messages, "response_format": {"type": "json_object"}}
+        if config.MACHINE_LEARNING.LLM_TEMPERATURE is not None:
+            kwargs["temperature"] = config.MACHINE_LEARNING.LLM_TEMPERATURE
+
+        response = await client.chat(**kwargs)
+
+        # Parse JSON response
+        json_data = json.loads(response.content)
+
+        # Validate and convert to Relationship objects
+        relationships = []
+        if "relationships" in json_data:
+            for rel_data in json_data["relationships"]:
+                try:
+                    relationships.append(Relationship(**rel_data))
+                except Exception as e:
+                    logger.warning(f"Failed to parse relationship: {rel_data}, error: {e}")
+
+        logger.info(f"Detected {len(relationships)} contrast/semantic relationships for {len(new_nodes)} new concepts")
+        return relationships
+
+    except Exception as e:
+        logger.error(f"Error while detecting contrasts: {e}")
+        return []
 
 async def generate_response_with_context(query: str, context: str) -> str:
     """Generate a response based on query and context using the configured LLM service."""

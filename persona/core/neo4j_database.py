@@ -72,6 +72,25 @@ class Neo4jConnectionManager:
         # Drop the vector index
         await self.drop_vector_index("embeddings_index")
 
+    async def delete_self_referencing_relationships(self, user_id: str) -> int:
+        """
+        Delete all relationships where source and target nodes are the same.
+        Returns the count of deleted relationships.
+        """
+        query = """
+        MATCH (n)-[r]->(n)
+        WHERE n.UserId = $user_id
+        DELETE r
+        RETURN count(r) as deleted_count
+        """
+        async with self._ensure_driver().session() as session:
+            result = await session.run(query, user_id=user_id)
+            record = await result.single()
+            count = record['deleted_count'] if record else 0
+            if count > 0:
+                logger.warning(f"Deleted {count} self-referencing relationship(s) for user {user_id}")
+            return count
+
     async def check_node_exists(self, node_name: str, node_type: str, user_id: str) -> bool:
         query = """
         MATCH (n {name: $node_name, NodeType: $node_type, UserId: $user_id})
@@ -248,9 +267,9 @@ class Neo4jConnectionManager:
                         properties = node.get("properties", {})
                         concept_uuid = properties.get("concept_uuid")
                         if not concept_uuid:
-                            logger.error(
-                                f"CRITICAL: Cannot create CognitiveLevel node '{node['name']}' without concept_uuid. "
-                                f"Skipping node creation."
+                            logger.warning(
+                                f"Cannot create CognitiveLevel node '{node['name']}' without concept_uuid. "
+                                f"Skipping node creation. This is likely an LLM extraction error that was filtered out."
                             )
                             continue
 

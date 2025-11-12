@@ -111,6 +111,11 @@ class NodeDeduplicator:
                 return None
             embedding = embeddings[0]
 
+        # Validate embedding is not empty
+        if not embedding or len(embedding) == 0:
+            logger.warning(f"Empty embedding vector for node: {node_name}. Skipping similarity search.")
+            return None
+
         # PHASE 1: If book_id provided, search within same book first (lower threshold)
         if book_id:
             try:

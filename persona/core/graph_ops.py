@@ -369,6 +369,7 @@ class GraphOps:
             return
 
         # STEP 1: Perform deduplication and get node mapping
+        # OPTIMIZATION: Batch deduplication queries using parallel execution
         # This checks for semantic duplicates and returns a mapping of new_name -> existing_name
         node_mapping = {}
         nodes_to_create = []
@@ -376,14 +377,18 @@ class GraphOps:
         chunk_ids_to_append = {}  # Maps existing_node_name -> [new chunk_ids to append]
         entity_ids_to_append = {}  # Maps existing_node_name -> {book_ids: [], highlight_ids: [], writing_ids: []}
 
-        for node in graph_update.nodes:
-            # Skip deduplication for CognitiveLevel nodes - each concept should have its own
-            # CognitiveLevel node(s) to track cognitive progression over time
-            if node.type == "CognitiveLevel":
-                nodes_to_create.append(node)
-                continue
+        # Separate CognitiveLevel nodes (skip deduplication) from others
+        cognitive_level_nodes = [node for node in graph_update.nodes if node.type == "CognitiveLevel"]
+        nodes_to_check = [node for node in graph_update.nodes if node.type != "CognitiveLevel"]
 
-            # Check if a similar node already exists
+        # Add cognitive level nodes directly
+        nodes_to_create.extend(cognitive_level_nodes)
+
+        # Parallelize deduplication checks for all non-CognitiveLevel nodes
+        import asyncio
+
+        async def check_single_node(node):
+            """Check if a single node has duplicates"""
             similar = await self.deduplicator.find_similar_node(
                 node_name=node.name,
                 node_type=node.type or "",
@@ -392,40 +397,54 @@ class GraphOps:
                 discipline=node.properties.get('discipline') if node.properties else None,
                 book_id=node.book_id[0] if node.book_id and len(node.book_id) > 0 else None
             )
+            return (node, similar)
 
-            if similar:
-                # Map this node to the existing similar node
-                existing_node_name = similar["name"]
-                node_mapping[node.name] = existing_node_name
+        # Execute all deduplication checks in parallel
+        if nodes_to_check:
+            dedup_tasks = [check_single_node(node) for node in nodes_to_check]
+            dedup_results = await asyncio.gather(*dedup_tasks, return_exceptions=True)
 
-                # Collect chunk_ids to append to the existing node
-                if node.chunk_ids:
-                    if existing_node_name not in chunk_ids_to_append:
-                        chunk_ids_to_append[existing_node_name] = []
-                    chunk_ids_to_append[existing_node_name].extend(node.chunk_ids)
+            # Process results
+            for result in dedup_results:
+                if isinstance(result, Exception):
+                    logger.warning(f"Deduplication check failed: {result}")
+                    continue
 
-                # Collect entity IDs to append to the existing node
-                if existing_node_name not in entity_ids_to_append:
-                    entity_ids_to_append[existing_node_name] = {
-                        'book_ids': [],
-                        'highlight_ids': [],
-                        'writing_ids': []
-                    }
+                node, similar = result
 
-                if node.book_id:
-                    entity_ids_to_append[existing_node_name]['book_ids'].extend(node.book_id)
-                if node.highlight_id:
-                    entity_ids_to_append[existing_node_name]['highlight_ids'].extend(node.highlight_id)
-                if node.writing_id:
-                    entity_ids_to_append[existing_node_name]['writing_ids'].extend(node.writing_id)
+                if similar:
+                    # Map this node to the existing similar node
+                    existing_node_name = similar["name"]
+                    node_mapping[node.name] = existing_node_name
 
-                logger.info(
-                    f"Merging node '{node.name}' into existing similar node '{existing_node_name}' "
-                    f"(score: {similar['score']:.3f})"
-                )
-            else:
-                # This is a genuinely new node
-                nodes_to_create.append(node)
+                    # Collect chunk_ids to append to the existing node
+                    if node.chunk_ids:
+                        if existing_node_name not in chunk_ids_to_append:
+                            chunk_ids_to_append[existing_node_name] = []
+                        chunk_ids_to_append[existing_node_name].extend(node.chunk_ids)
+
+                    # Collect entity IDs to append to the existing node
+                    if existing_node_name not in entity_ids_to_append:
+                        entity_ids_to_append[existing_node_name] = {
+                            'book_ids': [],
+                            'highlight_ids': [],
+                            'writing_ids': []
+                        }
+
+                    if node.book_id:
+                        entity_ids_to_append[existing_node_name]['book_ids'].extend(node.book_id)
+                    if node.highlight_id:
+                        entity_ids_to_append[existing_node_name]['highlight_ids'].extend(node.highlight_id)
+                    if node.writing_id:
+                        entity_ids_to_append[existing_node_name]['writing_ids'].extend(node.writing_id)
+
+                    logger.info(
+                        f"Merging node '{node.name}' into existing similar node '{existing_node_name}' "
+                        f"(score: {similar['score']:.3f})"
+                    )
+                else:
+                    # This is a genuinely new node
+                    nodes_to_create.append(node)
 
         # STEP 1.5: Append chunk_ids and entity IDs to existing nodes that had duplicates merged
         for existing_node_name, new_chunk_ids in chunk_ids_to_append.items():
