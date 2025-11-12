@@ -200,12 +200,18 @@ The nodes will be indexed in a knowledge graph and vector database hybrid system
   * NEVER use page numbers or plain numbers as chunk_ids
 - **discipline**: REQUIRED - Academic/knowledge domain (e.g., "Psychology", "Economics", "History", "Career", "Health")
   * If unclear, use "General" or the most appropriate broad category
-- **confidence**: REQUIRED - Extraction quality score (0.0 to 1.0)
-  * 1.0 = Explicit, direct statement with complete clarity
-  * 0.8-0.9 = Clear implication with strong context
-  * 0.6-0.7 = Reasonable inference
-  * 0.4-0.5 = Weak signal or ambiguous
-  * Below 0.4 = Too speculative, avoid creating node
+- **confidence**: REQUIRED - Combined score of extraction quality AND user engagement (0.0 to 1.0)
+  * Measures BOTH source text clarity AND user's depth of processing
+  * **For Concept nodes**: Consider UserNote engagement when assigning confidence
+    - **Shallow UserNote** (< 3 words, generic like "interesting", "cool", "noted", "wow") → Cap at 0.5-0.6 (indicates surface-level processing)
+    - **Moderate UserNote** (3-10 words, descriptive but no analysis) → Cap at 0.6-0.7
+    - **Analytical UserNote** (shows reasoning, critique, connection, synthesis) → Can reach 0.8-0.9 if source is clear
+  * **Base scoring** (applies to all node types):
+    - 1.0 = Explicit, direct statement with complete clarity
+    - 0.8-0.9 = Clear implication with strong context
+    - 0.6-0.7 = Reasonable inference
+    - 0.4-0.5 = Weak signal or ambiguous
+    - Below 0.4 = Too speculative, avoid creating node
 - **source_index**: REQUIRED for batch, OMIT for single-source
   * When input has "Source [0]:", "Source [1]:" format, include this field
   * Can be integer (0) or array for cross-source concepts ([0, 2])
@@ -389,9 +395,12 @@ UserNote content is a PRIMARY indicator of cognitive processing. Pay special att
 1. Assess based on what the user DEMONSTRATES in the Concept, not on correctness
 2. Look at the COMBINED information (Highlight + UserNote) that forms the Concept
 3. **PRIORITIZE the UserNote** - The user's own words are the strongest signal of cognitive processing
-4. Higher cognitive levels require explicit evidence - don't over-estimate
-5. When in doubt, default to a lower level (Remember or Understand)
-6. **Exception**: If UserNote shows clear critique/analysis/synthesis (even if brief), trust that signal over caution
+4. **UserNote quality affects TWO dimensions**:
+   - **CognitiveLevel**: Depth of understanding (Remember → Create)
+   - **Confidence**: Engagement quality (shallow notes cap confidence at 0.5-0.6)
+5. Higher cognitive levels require explicit evidence - don't over-estimate
+6. When in doubt, default to a lower level (Remember or Understand)
+7. **Exception**: If UserNote shows clear critique/analysis/synthesis (even if brief), trust that signal over caution
 
 ### Examples
 
@@ -466,6 +475,30 @@ Output nodes:
 4. {"name": "Evaluate", "type": "CognitiveLevel", "properties": {"discipline": "Education"}, ...}
 
 Key lesson: Brief critical notes can indicate high cognitive levels. The UserNote "Fundamentally wrong - ignores individual rights" is only 6 words but clearly demonstrates evaluative thinking.
+
+**EXAMPLE 5 - Confidence Scoring: Shallow vs Analytical UserNotes:**
+
+**Case A - Shallow UserNote (low confidence):**
+Input: Highlight "Ayn Rand described Friedrich Hayek as 'pure poison' and treated him as a pernicious enemy because she rejected his willingness to accept some government roles" + Note "interesting"
+
+Confidence Assessment:
+- The Highlight is explicit and clear (normally 0.8-0.9)
+- BUT the UserNote is shallow: only 1 word, generic/passive ("interesting")
+- Shallow note indicates surface-level processing, not deep engagement
+- **Confidence: 0.55** (capped due to shallow UserNote, despite clear highlight)
+- **CognitiveLevel: "Remember"** (passive reading, no analysis)
+
+**Case B - Analytical UserNote (high confidence):**
+Input: Same Highlight + Note "This shows Rand's absolutism - she couldn't tolerate even minor philosophical differences from allies"
+
+Confidence Assessment:
+- The Highlight is explicit and clear (0.8-0.9 base)
+- The UserNote shows analytical thinking: identifies pattern ("absolutism"), explains behavior
+- Analytical note indicates deep processing and engagement
+- **Confidence: 0.85** (high confidence - clear source + analytical engagement)
+- **CognitiveLevel: "Analyze"** (identifies patterns and explains)
+
+Key lesson: UserNote engagement depth affects confidence. Shallow notes ("interesting", "cool", "noted") cap confidence at 0.5-0.6, while analytical notes can reach 0.8-0.9.
 
 ### IMPORTANT: Term vs Theme vs Concept Distinction
 

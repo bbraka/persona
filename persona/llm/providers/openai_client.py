@@ -26,7 +26,7 @@ class OpenAIClient(BaseLLMClient):
                 max_connections=100,  # Total connection pool size
                 max_keepalive_connections=20,  # Keep-alive connections
             ),
-            timeout=httpx.Timeout(60.0, connect=10.0)  # 60s timeout, 10s connect timeout
+            timeout=httpx.Timeout(300.0, connect=10.0)  # 5-minute timeout for large batches, 10s connect timeout
         )
 
         # Initialize clients with optimized HTTP client

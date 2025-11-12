@@ -1301,7 +1301,6 @@ class GraphOps:
     async def prune_infrequent_themes(
         self,
         user_id: str,
-        min_chunks: int = 3,
         min_books: int = 2
     ) -> Dict[str, Any]:
         """
@@ -1312,14 +1311,18 @@ class GraphOps:
         - Tier 2: This method prunes Themes with insufficient evidence
 
         A Theme is kept if it meets EITHER criterion:
-        - Has 3+ unique chunk_ids (recurring across multiple reading chunks), OR
+        - Meets percentage-based threshold: 10% of book's chunks (min 3, max 15), OR
         - Has 2+ book_ids (recurring theme across multiple books)
+
+        Percentage-based threshold examples:
+        - Book with 10 chunks → threshold = 3 (30% due to floor)
+        - Book with 50 chunks → threshold = 5 (10%)
+        - Book with 200 chunks → threshold = 15 (7.5% due to ceiling)
 
         Otherwise, the Theme is too granular/one-off and gets deleted.
 
         Args:
             user_id: User ID
-            min_chunks: Minimum chunk_ids required for single-book Theme (default: 3)
             min_books: Minimum book_ids for cross-book Theme (default: 2)
 
         Returns:
@@ -1349,37 +1352,66 @@ class GraphOps:
                 "pruned_themes": []
             }
 
-        # Query to count and prune themes
+        # Query to count and prune themes using percentage-based threshold
         query = """
-        // Find all Theme nodes for this user
-        MATCH (n:NodeName {UserId: $user_id})
-        WHERE n.type = 'Theme'
-        WITH n,
-             size(COALESCE(n.chunk_ids, [])) as chunk_count,
-             size(COALESCE(n.book_id, [])) as book_count
+        // Step 1: Calculate total unique chunks per book across ALL nodes
+        MATCH (all_nodes:NodeName {UserId: $user_id})
+        WHERE size(COALESCE(all_nodes.book_id, [])) > 0
+        UNWIND all_nodes.book_id as book_id
+        UNWIND COALESCE(all_nodes.chunk_ids, []) as chunk_id
+        WITH book_id, collect(DISTINCT chunk_id) as all_chunks_in_book
+        WITH book_id, size(all_chunks_in_book) as total_chunks_in_book
 
-        // Classify as KEEP or PRUNE
-        WITH n, chunk_count, book_count,
+        // Step 2: Calculate percentage-based threshold for each book
+        // Formula: max(3, min(15, total_chunks * 0.10))
+        WITH book_id, total_chunks_in_book,
+             toInteger(CASE
+                 WHEN total_chunks_in_book * 0.10 < 3 THEN 3
+                 WHEN total_chunks_in_book * 0.10 > 15 THEN 15
+                 ELSE total_chunks_in_book * 0.10
+             END) as threshold_for_book
+
+        // Step 3: Collect thresholds by book_id
+        WITH collect({book_id: book_id, threshold: threshold_for_book, total_chunks: total_chunks_in_book}) as book_thresholds
+
+        // Step 4: Evaluate each Theme node
+        MATCH (theme:NodeName {UserId: $user_id})
+        WHERE theme.type = 'Theme'
+        WITH theme, book_thresholds,
+             size(COALESCE(theme.chunk_ids, [])) as theme_chunk_count,
+             size(COALESCE(theme.book_id, [])) as book_count,
+             COALESCE(theme.book_id, []) as theme_book_ids
+
+        // Step 5: Determine if theme should be kept
+        WITH theme, theme_chunk_count, book_count, theme_book_ids, book_thresholds,
              CASE
-                 WHEN chunk_count >= $min_chunks THEN 'KEEP'
+                 // Multi-book themes: automatically KEEP
                  WHEN book_count >= $min_books THEN 'KEEP'
+                 // Single-book themes: check against percentage threshold
+                 WHEN book_count = 1 THEN
+                     CASE
+                         // Find threshold for this theme's book
+                         WHEN theme_chunk_count >= [t IN book_thresholds WHERE t.book_id = theme_book_ids[0] | t.threshold][0] THEN 'KEEP'
+                         ELSE 'PRUNE'
+                     END
+                 // No books: prune
                  ELSE 'PRUNE'
              END as action
 
-        // Collect stats
+        // Step 6: Collect stats
         WITH
-            count(n) as total,
+            count(theme) as total,
             sum(CASE WHEN action = 'KEEP' THEN 1 ELSE 0 END) as kept,
             collect(CASE WHEN action = 'PRUNE' THEN {
-                name: n.name,
-                chunks: chunk_count,
+                name: theme.name,
+                chunks: theme_chunk_count,
                 books: book_count
             } ELSE null END) as to_prune_list
 
         // Filter nulls from to_prune_list
         WITH total, kept, [item IN to_prune_list WHERE item IS NOT NULL] as to_prune
 
-        // Delete the themes to prune
+        // Step 7: Delete the themes to prune
         UNWIND CASE WHEN size(to_prune) > 0 THEN to_prune ELSE [null] END as theme_info
         OPTIONAL MATCH (n:NodeName {UserId: $user_id, name: theme_info.name})
         WHERE n.type = 'Theme' AND theme_info IS NOT NULL
@@ -1392,7 +1424,6 @@ class GraphOps:
             result = await session.run(
                 query,
                 user_id=user_id,
-                min_chunks=min_chunks,
                 min_books=min_books
             )
             data = await result.data()

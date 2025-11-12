@@ -26,8 +26,8 @@ class IngestService:
         if isinstance(data, list):
             await constructor.ingest_batch_unstructured_data_to_graph(data)
 
-            # Tier 2: Prune low-frequency Themes after similarity merging
-            prune_stats = await graph_ops.prune_infrequent_themes(user_id, min_chunks=3, min_books=2)
+            # Tier 2: Prune low-frequency Themes using percentage-based threshold (10% of book chunks, min 3, max 15)
+            prune_stats = await graph_ops.prune_infrequent_themes(user_id, min_books=2)
 
             return {
                 "message": f"Successfully ingested {len(data)} data items",
@@ -36,8 +36,8 @@ class IngestService:
         else:
             await constructor.ingest_unstructured_data_to_graph(data)
 
-            # Tier 2: Prune low-frequency Themes after similarity merging
-            prune_stats = await graph_ops.prune_infrequent_themes(user_id, min_chunks=3, min_books=2)
+            # Tier 2: Prune low-frequency Themes using percentage-based threshold (10% of book chunks, min 3, max 15)
+            prune_stats = await graph_ops.prune_infrequent_themes(user_id, min_books=2)
 
             return {
                 "message": "Data ingested successfully",
