@@ -336,82 +336,23 @@ When ingesting **CHAT MESSAGES or CONVERSATIONS** (NOT book highlights):
 
 **CRITICAL**: Chat messages should NEVER create Highlight or UserNote nodes - those are exclusively for book content.
 
-### Cognitive Level Assessment Guide
+### Cognitive Level for 4-Node Pattern
 
-**Base your assessment on the Concept node content** - what depth of understanding does the extracted Concept demonstrate?
-Look at how the user engaged with the material in their highlight + note combination.
-
-* "Remember" - DEFAULT for passive reading:
-  - Concept is just factual recall or recognition (e.g., "X is Y")
-  - Simple definition or statement without elaboration
-  - User passively highlighted without adding interpretation
-  - Example: "Professor James Chen was an economist"
-
-* "Understand" - Concept shows comprehension:
-  - Concept includes explanation, paraphrasing, or comparison
-  - User demonstrates understanding in their own words
-  - Concept shows meaning-making beyond raw facts
-  - Example: "Professor Chen believed free markets self-regulate better than government intervention"
-
-* "Apply" - Concept shows practical application:
-  - Concept describes using knowledge in a specific context
-  - User demonstrates application to solve a problem
-  - Shows transfer to new situations or practical usage
-  - Example: "I used Professor Chen's monetary theory to analyze the 2008 financial crisis"
-
-* "Analyze" - Concept involves analytical thinking:
-  - Concept breaks down components, examines patterns
-  - User distinguishes parts and relationships
-  - Shows decomposition or systematic examination
-  - Example: "Professor Chen's theory has three core assumptions: rational actors, perfect information, and no externalities"
-
-* "Evaluate" - Concept includes judgment:
-  - Concept critiques, assesses, or judges ideas
-  - User makes informed judgments with criteria
-  - Shows critical evaluation or weighing of merits
-  - Example: "While Professor Chen's free market theory works in stable economies, it fails to account for systemic crises"
-
-* "Create" - Concept synthesizes new ideas:
-  - Concept combines ideas to produce new insights
-  - User creates original connections or interpretations
-  - Shows creative synthesis or novel perspective
-  - Example: "By combining Professor Chen's monetary theory with Dr. Martinez's fiscal policy, we can create a hybrid crisis response framework"
-
-**Key Assessment Principles for UserNotes**:
-UserNote content is a PRIMARY indicator of cognitive processing. Pay special attention to:
-
-* **Brief critical notes can indicate HIGH cognitive levels** - A short evaluative comment often shows deeper thinking than a long passive highlight
-* **Evaluative language signals** - Words like "issue", "problem", "flaw", "strength", "wrong", "correct", "better", "worse" indicate judgment (Evaluate level)
-* **Analytical language signals** - Phrases like "because", "therefore", "this shows", "breaks down to", "components are", "pattern is" indicate analysis (Analyze level)
-* **Synthesis language signals** - Words like "combines", "connects", "integrates", "builds on", "brings together" indicate synthesis (Create level)
-* **Application signals** - Phrases like "applies to", "use this for", "in my context", "this explains [real situation]" indicate application (Apply level)
-* **Length ≠ Cognitive Level** - A 5-word critical note ("author's main flaw here") beats a 50-word passive summary
-* **User's interpretation > Highlight length** - When assessing the Concept, prioritize what the USER added (their note) over what they copied (the highlight)
-* **Challenge/critique → Evaluate or higher** - When UserNote challenges, questions, or critiques the source material, this is rarely below "Evaluate"
-* **Pattern recognition → Analyze** - When UserNote identifies patterns, structures, or breaks down components, this is "Analyze" or higher
-* **Cross-context connection → Apply or higher** - When UserNote connects to other situations, books, or real-world contexts, this is "Apply" or higher
-
-**Assessment Guidelines**:
-1. Assess based on what the user DEMONSTRATES in the Concept, not on correctness
-2. Look at the COMBINED information (Highlight + UserNote) that forms the Concept
-3. **PRIORITIZE the UserNote** - The user's own words are the strongest signal of cognitive processing
-4. **UserNote quality affects TWO dimensions**:
-   - **CognitiveLevel**: Depth of understanding (Remember → Create)
-   - **Confidence**: Engagement quality (shallow notes cap confidence at 0.5-0.6)
-5. Higher cognitive levels require explicit evidence - don't over-estimate
-6. When in doubt, default to a lower level (Remember or Understand)
-7. **Exception**: If UserNote shows clear critique/analysis/synthesis (even if brief), trust that signal over caution
+**NOTE**: CognitiveLevel nodes are assessed in a separate phase after extraction. When extracting nodes:
+- For each Concept node, create a corresponding CognitiveLevel node
+- Use your best initial guess for the level (Remember, Understand, Apply, Analyze, Evaluate, or Create)
+- The level will be verified/corrected in a later assessment phase
+- Default to "Remember" when uncertain
 
 ### Examples
 
-**EXAMPLE 1 - Remember Level (Non-Fiction):**
-Input: Highlight "Professor James Chen, Dr. Sarah Martinez" + Note "Advisor and mentor to Robert Thompson"
+**EXAMPLE 0 - Evaluate (user critiques):**
+Highlight: "[context]" + Note: "Rand's issue is exactly being extreme!"
+→ User GRADES the behavior ("issue", "extreme") = **Evaluate**
 
-Cognitive Assessment:
-- Concept formed: "Professor James Chen and Dr. Sarah Martinez were advisors to Robert Thompson"
-- This is simple factual recall - the user is just noting who the advisors were
-- No explanation, analysis, or application demonstrated
-- **CognitiveLevel: "Remember"**
+**EXAMPLE 1 - Remember (passive note):**
+Highlight: "Professor Chen, Dr. Martinez" + Note: "Advisor to Thompson"
+→ User just notes facts passively = **Remember**
 
 Output nodes:
 1. {"name": "Professor James Chen, Dr. Sarah Martinez", "type": "Highlight", "properties": {"discipline": "Economics"}, ...}
@@ -422,83 +363,19 @@ Output nodes:
 6. {"name": "Sarah Martinez", "type": "Person", "properties": {"discipline": "Economics"}, ...}
 7. {"name": "Robert Thompson", "type": "Person", "properties": {"discipline": "Economics"}, ...}
 
-**EXAMPLE 2 - Evaluate Level:**
-Input: Highlight "Free market capitalism" + Note "Works best when information is symmetric and transaction costs are low, but fails during crises when these assumptions break down"
+**EXAMPLE 2 - Understand (feeling):**
+Highlight: "Theory X" + Note: "Fascinating how this applies!"
+→ User shows feeling/emotional response = **Understand**
 
-Cognitive Assessment:
-- Concept formed: "Free market capitalism works best with symmetric information and low transaction costs, but fails when these conditions don't hold"
-- User is making a critical judgment about when the theory works vs. fails
-- Shows evaluation with specific criteria (information symmetry, transaction costs)
-- **CognitiveLevel: "Evaluate"**
+**EXAMPLE 3 - Apply (personal example):**
+Highlight: "Principle Y" + Note: "I use this in my daily work"
+→ User connects to personal context = **Apply**
 
-Output nodes:
-1. {"name": "Free market capitalism", "type": "Highlight", ...}
-2. {"name": "Works best when information is symmetric...", "type": "UserNote", ...}
-3. {"name": "Free market capitalism works best with symmetric information and low transaction costs, but fails when these conditions don't hold", "type": "Concept", ...}
-4. {"name": "Evaluate", "type": "CognitiveLevel", ...}
+**EXAMPLE 4 - Evaluate (brief critique):**
+Highlight: "Altruism theory" + Note: "Wrong - ignores rights"
+→ User grades/critiques (brief but evaluative) = **Evaluate**
 
-These 4 nodes will be connected via relationships (see GET_RELATIONSHIPS for details).
-
-**EXAMPLE 3 - Analyze Level (Fiction):**
-Input: Highlight "Elizabeth struggled between duty to family and desire for independence" + Note "This internal conflict mirrors the broader theme of women's autonomy in the era"
-
-Cognitive Assessment:
-- Concept formed: "Elizabeth's internal conflict between duty and independence reflects broader social tensions around women's autonomy"
-- User breaks down the character's struggle into components (duty vs. independence)
-- User connects individual conflict to broader thematic pattern
-- Shows analytical thinking by identifying relationships and patterns
-- **CognitiveLevel: "Analyze"**
-
-Output nodes:
-1. {"name": "Elizabeth struggled between duty to family and desire for independence", "type": "Highlight", "properties": {"discipline": "Literature"}, ...}
-2. {"name": "This internal conflict mirrors the broader theme of women's autonomy in the era", "type": "UserNote", "properties": {"discipline": "Literature"}, ...}
-3. {"name": "Elizabeth's internal conflict between duty and independence reflects broader social tensions around women's autonomy", "type": "Concept", "properties": {"discipline": "Literature"}, ...}
-4. {"name": "Analyze", "type": "CognitiveLevel", "properties": {"discipline": "Education"}, ...}
-5. {"name": "Elizabeth", "type": "Person", "properties": {"discipline": "Literature"}, ...}
-
-Note: Person node extracted from the character name in the highlight. This applies to both real people and fictional characters.
-
-**EXAMPLE 4 - Brief Evaluative Note (Evaluate Level):**
-Input: Highlight "The author argues that altruism is the highest moral virtue, requiring individuals to sacrifice their interests for others" + Note "Fundamentally wrong - ignores individual rights"
-
-Cognitive Assessment:
-- Concept formed: "The author's claim that altruism is the highest virtue is fundamentally wrong because it ignores individual rights"
-- UserNote is BRIEF (only 6 words) but shows CRITICAL JUDGMENT
-- User challenges the author's core claim with a principled objection
-- The note demonstrates evaluation (critique based on rights framework)
-- **CognitiveLevel: "Evaluate"** (despite brevity - evaluative language trumps length)
-
-Output nodes:
-1. {"name": "The author argues that altruism is the highest moral virtue...", "type": "Highlight", "properties": {"discipline": "Philosophy"}, ...}
-2. {"name": "Fundamentally wrong - ignores individual rights", "type": "UserNote", "properties": {"discipline": "Philosophy"}, ...}
-3. {"name": "The author's claim that altruism is the highest virtue is fundamentally wrong because it ignores individual rights", "type": "Concept", "properties": {"discipline": "Philosophy"}, ...}
-4. {"name": "Evaluate", "type": "CognitiveLevel", "properties": {"discipline": "Education"}, ...}
-
-Key lesson: Brief critical notes can indicate high cognitive levels. The UserNote "Fundamentally wrong - ignores individual rights" is only 6 words but clearly demonstrates evaluative thinking.
-
-**EXAMPLE 5 - Confidence Scoring: Shallow vs Analytical UserNotes:**
-
-**Case A - Shallow UserNote (low confidence):**
-Input: Highlight "Ayn Rand described Friedrich Hayek as 'pure poison' and treated him as a pernicious enemy because she rejected his willingness to accept some government roles" + Note "interesting"
-
-Confidence Assessment:
-- The Highlight is explicit and clear (normally 0.8-0.9)
-- BUT the UserNote is shallow: only 1 word, generic/passive ("interesting")
-- Shallow note indicates surface-level processing, not deep engagement
-- **Confidence: 0.55** (capped due to shallow UserNote, despite clear highlight)
-- **CognitiveLevel: "Remember"** (passive reading, no analysis)
-
-**Case B - Analytical UserNote (high confidence):**
-Input: Same Highlight + Note "This shows Rand's absolutism - she couldn't tolerate even minor philosophical differences from allies"
-
-Confidence Assessment:
-- The Highlight is explicit and clear (0.8-0.9 base)
-- The UserNote shows analytical thinking: identifies pattern ("absolutism"), explains behavior
-- Analytical note indicates deep processing and engagement
-- **Confidence: 0.85** (high confidence - clear source + analytical engagement)
-- **CognitiveLevel: "Analyze"** (identifies patterns and explains)
-
-Key lesson: UserNote engagement depth affects confidence. Shallow notes ("interesting", "cool", "noted") cap confidence at 0.5-0.6, while analytical notes can reach 0.8-0.9.
+**Note on Confidence**: Shallow notes ("interesting") cap confidence at ~0.5-0.6, while notes showing deeper engagement can reach 0.8-0.9.
 
 ### IMPORTANT: Term vs Theme vs Concept Distinction
 
@@ -1137,6 +1014,58 @@ Example:
 - Use exact node names from the input
 - Return empty array if no meaningful relationships exist
 - Self-loops are meaningless and will be rejected
+"""
+
+ASSESS_COGNITIVE_LEVEL = """
+You are an expert in educational psychology and Bloom's Taxonomy. Your task is to assess the cognitive level of a user's reaction/note based on how they engaged with source material.
+
+**CRITICAL: Assess based on the USER'S REACTION, not the content itself.**
+
+**Cognitive Levels** (Bloom's Taxonomy):
+
+* **Remember** - Passive acknowledgment without deeper processing
+  - Examples: "interesting", "important", "noted", "wow"
+  - Just marking or copying without interpretation
+
+* **Understand** - Shows feeling, emotional response, or comparison
+  - Examples: "fascinating!", "surprising", "like X", "reminds me of Y"
+  - Demonstrates comprehension or makes connections
+
+* **Apply** - Expresses certainty or provides personal example
+  - Examples: "exactly right", "I use this when...", "happened to me", "this is how I..."
+  - Connects to personal context or application
+
+* **Analyze** or **Evaluate** - Grades, critiques, or judges
+  - Examples: "the issue is...", "wrong", "flaw is...", "the problem is being extreme!"
+  - Identifies problems, strengths, or makes critical judgments
+  - Note: Use "Analyze" for breaking down; "Evaluate" for judging/critiquing
+
+* **Create** - Generates new idea or synthesis
+  - Examples: "combining X and Y...", "what if...", "this suggests a new approach..."
+  - Creates original connections or novel insights
+
+**Assessment Rules**:
+1. Focus ONLY on what the user wrote in their reaction
+2. Brief critical notes can indicate high levels: "X's issue is extreme!" → Evaluate
+3. When unclear: default to "Remember" or "Understand"
+
+**Input Format**:
+You will receive a UserNote text (the user's reaction to something they read/highlighted).
+
+**Output Format**:
+Return JSON with a single field:
+```json
+{
+  "cognitive_level": "Remember|Understand|Apply|Analyze|Evaluate|Create"
+}
+```
+
+**Examples**:
+- Input: "interesting" → Output: {"cognitive_level": "Remember"}
+- Input: "Rand's issue is exactly being extreme!" → Output: {"cognitive_level": "Evaluate"}
+- Input: "fascinating how this applies!" → Output: {"cognitive_level": "Understand"}
+- Input: "I use this in my daily work" → Output: {"cognitive_level": "Apply"}
+- Input: "wrong - ignores rights" → Output: {"cognitive_level": "Evaluate"}
 """
 
 GENERATE_COMMUNITIES = """

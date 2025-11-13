@@ -1,6 +1,6 @@
 import json
 from typing import List, Optional, Tuple, Dict, Any
-from persona.llm.prompts import GET_NODES, GET_RELATIONSHIPS, DETECT_CONTRASTS, GENERATE_COMMUNITIES, GENERATE_STRUCTURED_INSIGHTS
+from persona.llm.prompts import GET_NODES, GET_RELATIONSHIPS, DETECT_CONTRASTS, GENERATE_COMMUNITIES, GENERATE_STRUCTURED_INSIGHTS, ASSESS_COGNITIVE_LEVEL
 from persona.models.schema import EntityExtractionResponse, NodesAndRelationshipsResponse, CommunityStructure, AskResponse, AskRequest, create_dynamic_schema
 from pydantic import BaseModel, Field, field_validator, model_validator
 from persona.utils.instructions_reader import INSTRUCTIONS
@@ -160,6 +160,62 @@ async def get_relationships(nodes: List[Node], graph_context: str) -> Tuple[List
     except Exception as e:
         logger.error(f"Error while generating relationships: {e}")
         return [], {}
+
+async def assess_cognitive_level(user_note_text: str) -> str:
+    """
+    Assess cognitive level based on user's note/reaction text.
+
+    This function takes a UserNote text and determines what cognitive level
+    (from Bloom's Taxonomy) the user demonstrated through their reaction.
+
+    Args:
+        user_note_text: The text of the user's note/reaction
+
+    Returns:
+        One of: "Remember", "Understand", "Apply", "Analyze", "Evaluate", "Create"
+
+    Example:
+        >>> await assess_cognitive_level("interesting")
+        "Remember"
+        >>> await assess_cognitive_level("Rand's issue is exactly being extreme!")
+        "Evaluate"
+    """
+    if not user_note_text or not user_note_text.strip():
+        logger.warning("Empty UserNote text provided for cognitive assessment, defaulting to Remember")
+        return "Remember"
+
+    try:
+        messages = [
+            ChatMessage(role="system", content=ASSESS_COGNITIVE_LEVEL),
+            ChatMessage(role="user", content=f"UserNote text: {user_note_text}")
+        ]
+
+        client = get_chat_client()
+
+        # Build kwargs, only include temperature if configured
+        kwargs = {"messages": messages, "response_format": {"type": "json_object"}}
+        if config.MACHINE_LEARNING.LLM_TEMPERATURE is not None:
+            kwargs["temperature"] = config.MACHINE_LEARNING.LLM_TEMPERATURE
+
+        response = await client.chat(**kwargs)
+
+        # Parse JSON response
+        json_data = json.loads(response.content)
+
+        cognitive_level = json_data.get("cognitive_level", "Remember")
+
+        # Validate the response
+        valid_levels = ["Remember", "Understand", "Apply", "Analyze", "Evaluate", "Create"]
+        if cognitive_level not in valid_levels:
+            logger.warning(f"Invalid cognitive level '{cognitive_level}' returned, defaulting to Remember")
+            return "Remember"
+
+        logger.debug(f"Assessed cognitive level for note '{user_note_text[:50]}...': {cognitive_level}")
+        return cognitive_level
+
+    except Exception as e:
+        logger.error(f"Error while assessing cognitive level: {e}")
+        return "Remember"
 
 async def detect_contrasts(new_nodes: List[Node], candidates_context: str) -> List[Relationship]:
     """

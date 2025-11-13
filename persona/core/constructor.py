@@ -1,5 +1,5 @@
 from persona.core.graph_ops import GraphOps, GraphContextRetriever
-from persona.llm.llm_graph import get_nodes, get_relationships, Node as LLMNode
+from persona.llm.llm_graph import get_nodes, get_relationships, assess_cognitive_level, Node as LLMNode
 from persona.llm.embeddings import generate_embeddings
 from persona.models.schema import (
     NodeModel, RelationshipModel, GraphUpdateModel,
@@ -250,7 +250,7 @@ class GraphConstructor:
         if has_source_index:
             # Batch mode: Group by source_index
             from collections import defaultdict
-            source_groups = defaultdict(lambda: {'concepts': [], 'cognitive_levels': []})
+            source_groups = defaultdict(lambda: {'concepts': [], 'cognitive_levels': [], 'usernotes': []})
 
             for node in nodes:
                 source_idx = getattr(node, 'source_index', None)
@@ -261,11 +261,14 @@ class GraphConstructor:
                     source_groups[source_idx]['concepts'].append(node)
                 elif node.type == "CognitiveLevel":
                     source_groups[source_idx]['cognitive_levels'].append(node)
+                elif node.type == "UserNote":
+                    source_groups[source_idx]['usernotes'].append(node)
 
             # Create one relationship per source_index
             for source_idx, group in source_groups.items():
                 concepts = group['concepts']
                 cognitive_levels = group['cognitive_levels']
+                usernotes = group['usernotes']
 
                 if not concepts or not cognitive_levels:
                     if concepts and not cognitive_levels:
@@ -277,6 +280,27 @@ class GraphConstructor:
                 # Take first Concept and first CognitiveLevel for this source
                 concept = concepts[0]
                 cognitive_level = cognitive_levels[0]
+
+                # ASSESSMENT PHASE: Assess cognitive level based on UserNote
+                if usernotes:
+                    usernote = usernotes[0]
+                    try:
+                        assessed_level = await assess_cognitive_level(usernote.name)
+
+                        if assessed_level != cognitive_level.name:
+                            logger.info(
+                                f"Cognitive level assessment corrected: '{cognitive_level.name}' → '{assessed_level}' "
+                                f"for UserNote: '{usernote.name[:50]}...'"
+                            )
+                            # Update the cognitive level node's name with assessed level
+                            cognitive_level.name = assessed_level
+                        else:
+                            logger.debug(f"Cognitive level assessment confirmed: '{assessed_level}'")
+                    except Exception as e:
+                        logger.error(f"Error during cognitive assessment for source [{source_idx}]: {e}")
+                        # Continue with original level if assessment fails
+                else:
+                    logger.warning(f"Source [{source_idx}] has no UserNote for cognitive assessment")
 
                 # Get or generate UUID for the Concept
                 concept_uuid = await self._get_or_generate_concept_uuid(concept.name)
@@ -330,6 +354,29 @@ class GraphConstructor:
             # Single insert mode: Connect all Concepts to all CognitiveLevels
             concepts = [n for n in nodes if n.type == "Concept"]
             cognitive_levels = [n for n in nodes if n.type == "CognitiveLevel"]
+            usernotes = [n for n in nodes if n.type == "UserNote"]
+
+            # ASSESSMENT PHASE: Assess cognitive levels based on UserNotes (single mode)
+            if usernotes and cognitive_levels:
+                # Typically 1 UserNote and 1 CognitiveLevel in single insert mode
+                for i, cognitive_level in enumerate(cognitive_levels):
+                    if i < len(usernotes):  # Match UserNote to CognitiveLevel by index
+                        usernote = usernotes[i]
+                        try:
+                            assessed_level = await assess_cognitive_level(usernote.name)
+
+                            if assessed_level != cognitive_level.name:
+                                logger.info(
+                                    f"Cognitive level assessment corrected: '{cognitive_level.name}' → '{assessed_level}' "
+                                    f"for UserNote: '{usernote.name[:50]}...'"
+                                )
+                                # Update the cognitive level node's name with assessed level
+                                cognitive_level.name = assessed_level
+                            else:
+                                logger.debug(f"Cognitive level assessment confirmed: '{assessed_level}'")
+                        except Exception as e:
+                            logger.error(f"Error during cognitive assessment in single mode: {e}")
+                            # Continue with original level if assessment fails
 
             if concepts and cognitive_levels:
                 # For single insert, typically expect 1 Concept and 1 CognitiveLevel
@@ -530,13 +577,8 @@ class GraphConstructor:
             raise RuntimeError("GraphConstructor must be used as an async context manager")
         from persona.models.schema import RelationshipModel, NodesAndRelationshipsResponse
 
-        # Generate embeddings
-        node_texts = [node.name for node in nodes]
-        embeddings = generate_embeddings(node_texts)
-
-        # Convert to NodeModels
-        node_models = self._nodes_to_node_models(nodes, embeddings)
-
+        # IMPORTANT: Create system-managed relationships BEFORE NodeModel conversion
+        # This allows cognitive level assessment to update node names before they're frozen in NodeModels
         # Filter out any system-managed relationships from LLM (these should only be created by the system)
         # - HAS_UNDERSTANDING_LEVEL: System creates these for Concept-CognitiveLevel pairs
         # - ANNOTATED_WITH: System creates these for Highlight-UserNote pairs
@@ -548,9 +590,16 @@ class GraphConstructor:
         if filtered_count > 0:
             logger.warning(f"Filtered out {filtered_count} system-managed relationship(s) from LLM output (system creates these automatically)")
 
-        # Create system-managed relationships
+        # Create system-managed relationships (this includes cognitive level assessment)
         cognitive_relationships = await self._create_cognitive_level_relationships(nodes)
         highlight_usernote_relationships = await self._create_highlight_usernote_relationships(nodes)
+
+        # NOW generate embeddings and convert to NodeModels (after cognitive assessment updated node names)
+        node_texts = [node.name for node in nodes]
+        embeddings = generate_embeddings(node_texts)
+
+        # Convert to NodeModels
+        node_models = self._nodes_to_node_models(nodes, embeddings)
 
         # Convert relationships (include both LLM-generated and system-managed relationships)
         all_relationships = llm_relationships + cognitive_relationships + highlight_usernote_relationships
