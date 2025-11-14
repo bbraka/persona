@@ -1,0 +1,59 @@
+name: Deploy to SFTP Server
+
+on:
+  push:
+    branches: [ feature/pkg-book-knowledge ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SFTP_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p 22 ${{ secrets.SFTP_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy files via SFTP
+        run: |
+          rsync -avz --delete \
+            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
+            --exclude '.git' \
+            --exclude '.github' \
+            --exclude 'neo4j-data' \
+            --exclude '__pycache__' \
+            --exclude '*.pyc' \
+            --exclude '.pytest_cache' \
+            --exclude '.vscode' \
+            --exclude '.env.example' \
+            ./ ${{ secrets.SFTP_USER }}@${{ secrets.SFTP_HOST }}:${{ secrets.SFTP_REMOTE_PATH }}
+
+      - name: Build and restart Docker containers
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ secrets.SFTP_USER }}@${{ secrets.SFTP_HOST }} << 'EOF'
+            cd ${{ secrets.SFTP_REMOTE_PATH }}
+
+            echo "Building Docker images..."
+            docker compose -f docker-compose.yml build --no-cache app
+
+            echo "Restarting services..."
+            docker compose -f docker-compose.yml down
+            docker compose -f docker-compose.yml up -d
+
+            echo "Checking service status..."
+            docker compose -f docker-compose.yml ps
+
+            echo "Deployment completed successfully!"
+          EOF
+
+      - name: Cleanup SSH key
+        if: always()
+        run: |
+          rm -f ~/.ssh/deploy_key
