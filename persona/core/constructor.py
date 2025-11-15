@@ -53,29 +53,40 @@ class GraphConstructor:
 
         relationships = []
 
+        # OPTIMIZATION: Filter out CognitiveLevel nodes from relationship generation
+        # CognitiveLevel nodes can ONLY have HAS_UNDERSTANDING_LEVEL (created by system, not LLM)
+        # This saves LLM tokens and processing time
+        nodes_for_llm = [n for n in nodes if n.type != "CognitiveLevel"]
+
+        if len(nodes_for_llm) < len(nodes):
+            logger.info(
+                f"Filtered out {len(nodes) - len(nodes_for_llm)} CognitiveLevel node(s) "
+                f"from relationship generation (they can only have HAS_UNDERSTANDING_LEVEL)"
+            )
+
         # Get existing graph context
         existing_context = await self.graph_context_retriever.get_rich_context(text, self.user_id)
 
         # Phase 1: Core relationships between new nodes
-        new_node_relationships = await self.generate_relationships(nodes)
+        new_node_relationships = await self.generate_relationships(nodes_for_llm)
         relationships.extend(new_node_relationships)
 
         # Phase 2: Connect with existing nodes
-        if existing_context and len(nodes) > 0:
-            mixed_relationships = await self.generate_cross_relationships(nodes, existing_context)
+        if existing_context and len(nodes_for_llm) > 0:
+            mixed_relationships = await self.generate_cross_relationships(nodes_for_llm, existing_context)
             relationships.extend(mixed_relationships)
 
         # Phase 3: Book-scoped relationships
         for book_id in book_ids:
-            book_relationships = await self.generate_book_scoped_relationships(nodes, book_id)
+            book_relationships = await self.generate_book_scoped_relationships(nodes_for_llm, book_id)
             relationships.extend(book_relationships)
             logger.info(f"Created {len(book_relationships)} book-scoped relationships for book {book_id}")
 
         # Phase 4: Contrast/semantic relationships (finds philosophical opposites and debates)
         logger.info(f"Phase 4 check: book_ids={book_ids}, has_context={bool(book_ids)}")
         if book_ids:  # Only run if we have book context
-            logger.info(f"Phase 4: Calling generate_contrast_relationships with {len(nodes)} nodes and book_ids={book_ids}")
-            contrast_relationships = await self.generate_contrast_relationships(nodes, book_ids)
+            logger.info(f"Phase 4: Calling generate_contrast_relationships with {len(nodes_for_llm)} nodes and book_ids={book_ids}")
+            contrast_relationships = await self.generate_contrast_relationships(nodes_for_llm, book_ids)
             relationships.extend(contrast_relationships)
             logger.info(f"Created {len(contrast_relationships)} contrast/semantic relationships")
         else:
@@ -192,6 +203,75 @@ class GraphConstructor:
         import uuid
         return str(uuid.uuid4())
 
+    async def _ensure_concepts_have_cognitive_levels(self, nodes: List[Node], has_source_index: bool) -> None:
+        """
+        Validation #3: Ensure every Concept node has a corresponding CognitiveLevel node.
+        If a Concept is missing a CognitiveLevel, create a default "Remember" node IN MEMORY.
+
+        This MUST run BEFORE cognitive assessment so that default nodes also get assessed.
+
+        Args:
+            nodes: List of all nodes
+            has_source_index: Whether this is batch mode (True) or single mode (False)
+        """
+        from collections import defaultdict
+
+        if has_source_index:
+            # Batch mode: Group by source_index
+            source_groups = defaultdict(lambda: {'concepts': [], 'cognitive_levels': []})
+            for node in nodes:
+                source_idx = getattr(node, 'source_index', None)
+                if source_idx is None:
+                    continue
+                if node.type == "Concept":
+                    source_groups[source_idx]['concepts'].append(node)
+                elif node.type == "CognitiveLevel":
+                    source_groups[source_idx]['cognitive_levels'].append(node)
+
+            # Check each source_index
+            for source_idx, group in source_groups.items():
+                if group['concepts'] and not group['cognitive_levels']:
+                    # Concept exists but no CognitiveLevel - create default
+                    logger.warning(
+                        f"Source [{source_idx}] has Concept but no CognitiveLevel - creating default 'Remember'"
+                    )
+                    from persona.models.schema import Node as SchemaNode
+                    from datetime import datetime, timezone
+                    default_cognitive_level = SchemaNode(
+                        name="Remember",
+                        type="CognitiveLevel",
+                        discipline="Education",
+                        confidence=0.5,
+                        created_at=datetime.now(timezone.utc)
+                    )
+                    default_cognitive_level.source_index = source_idx  # type: ignore
+                    nodes.append(default_cognitive_level)
+        else:
+            # Single mode: Check all Concepts
+            concepts = [n for n in nodes if n.type == "Concept"]
+            cognitive_levels = [n for n in nodes if n.type == "CognitiveLevel"]
+
+            # If there are Concepts but no CognitiveLevels, create defaults
+            if concepts and not cognitive_levels:
+                logger.warning(
+                    f"Found {len(concepts)} Concept(s) but no CognitiveLevel nodes - creating defaults"
+                )
+                from persona.models.schema import Node as SchemaNode
+                from datetime import datetime, timezone
+
+                # Create one default "Remember" CognitiveLevel per Concept
+                # (Following the same pattern as batch mode, but for single mode)
+                for concept in concepts:
+                    default_cognitive_level = SchemaNode(
+                        name="Remember",
+                        type="CognitiveLevel",
+                        discipline="Education",
+                        confidence=0.5,
+                        created_at=datetime.now(timezone.utc)
+                    )
+                    nodes.append(default_cognitive_level)
+                    logger.debug(f"Created default 'Remember' CognitiveLevel for Concept '{concept.name}'")
+
     async def _get_existing_cognitive_level_values(self, concept_uuid: str) -> set:
         """
         Query existing CognitiveLevel values connected to a Concept via shared UUID.
@@ -239,13 +319,18 @@ class GraphConstructor:
         relationships = []
 
         # Track which CognitiveLevel nodes are being connected (validation rule #1)
-        cognitive_level_connections = {}  # cognitive_level.name -> concept.name
+        # IMPORTANT: Track by node instance ID, not by name (multiple "Remember" nodes are allowed)
+        cognitive_level_connections = {}  # id(cognitive_level) -> concept.name
 
         # Track which Concepts have received relationships (validation rule #3)
         concepts_with_relationships = set()
 
         # Check if we have source_index data (batch ingestion)
         has_source_index = any(getattr(node, 'source_index', None) is not None for node in nodes)
+
+        # VALIDATION #3 FIRST: Ensure every Concept has a CognitiveLevel node BEFORE assessment
+        # This must run BEFORE assessment so default nodes get assessed too
+        await self._ensure_concepts_have_cognitive_levels(nodes, has_source_index)
 
         if has_source_index:
             # Batch mode: Group by source_index
@@ -324,19 +409,20 @@ class GraphConstructor:
                     continue
 
                 # Validation #1: CognitiveLevel can only connect to ONE Concept
-                # Track using cognitive_level.name (the simple level name like "Remember")
-                if cognitive_level.name in cognitive_level_connections:
+                # Track using node instance ID (multiple "Remember" nodes are allowed, but each instance connects once)
+                cognitive_level_id = id(cognitive_level)
+                if cognitive_level_id in cognitive_level_connections:
                     logger.error(
-                        f"Validation failed: CognitiveLevel '{cognitive_level.name}' already connected to "
-                        f"'{cognitive_level_connections[cognitive_level.name]}', cannot connect to '{concept.name}'"
+                        f"Validation failed: CognitiveLevel '{cognitive_level.name}' (instance {cognitive_level_id}) already connected to "
+                        f"'{cognitive_level_connections[cognitive_level_id]}', cannot connect to '{concept.name}'"
                     )
                     continue
 
                 # Add shared UUID to CognitiveLevel node
                 cognitive_level.concept_uuid = concept_uuid  # type: ignore
 
-                # Track this connection
-                cognitive_level_connections[cognitive_level.name] = concept.name
+                # Track this connection by node instance
+                cognitive_level_connections[cognitive_level_id] = concept.name
                 concepts_with_relationships.add(concept.name)
 
                 relationships.append(Relationship(
@@ -404,18 +490,20 @@ class GraphConstructor:
                             continue
 
                         # Validation #1: CognitiveLevel can only connect to ONE Concept
-                        if cognitive_level.name in cognitive_level_connections:
+                        # Track using node instance ID (multiple "Remember" nodes are allowed, but each instance connects once)
+                        cognitive_level_id = id(cognitive_level)
+                        if cognitive_level_id in cognitive_level_connections:
                             logger.error(
-                                f"Validation failed: CognitiveLevel '{cognitive_level.name}' already connected to "
-                                f"'{cognitive_level_connections[cognitive_level.name]}', cannot connect to '{concept.name}'"
+                                f"Validation failed: CognitiveLevel '{cognitive_level.name}' (instance {cognitive_level_id}) already connected to "
+                                f"'{cognitive_level_connections[cognitive_level_id]}', cannot connect to '{concept.name}'"
                             )
                             continue
 
                         # Add shared UUID to CognitiveLevel node
                         cognitive_level.concept_uuid = concept_uuid  # type: ignore
 
-                        # Track this connection
-                        cognitive_level_connections[cognitive_level.name] = concept.name
+                        # Track this connection by node instance
+                        cognitive_level_connections[cognitive_level_id] = concept.name
                         concepts_with_relationships.add(concept.name)
 
                         relationships.append(Relationship(
@@ -579,16 +667,36 @@ class GraphConstructor:
 
         # IMPORTANT: Create system-managed relationships BEFORE NodeModel conversion
         # This allows cognitive level assessment to update node names before they're frozen in NodeModels
+
+        # Get all CognitiveLevel node names to filter relationships
+        cognitive_level_names = {node.name for node in nodes if node.type == "CognitiveLevel"}
+
         # Filter out any system-managed relationships from LLM (these should only be created by the system)
         # - HAS_UNDERSTANDING_LEVEL: System creates these for Concept-CognitiveLevel pairs
         # - ANNOTATED_WITH: System creates these for Highlight-UserNote pairs
+        # CRITICAL: Also filter out ANY relationship involving CognitiveLevel nodes
+        # CognitiveLevel nodes can ONLY have ONE edge: HAS_UNDERSTANDING_LEVEL from their parent Concept
         llm_relationships = [
             rel for rel in relationships
             if rel.relation not in ["HAS_UNDERSTANDING_LEVEL", "ANNOTATED_WITH"]
+            and rel.source not in cognitive_level_names  # CognitiveLevel cannot be source
+            and rel.target not in cognitive_level_names  # CognitiveLevel cannot be target
         ]
+
         filtered_count = len(relationships) - len(llm_relationships)
         if filtered_count > 0:
-            logger.warning(f"Filtered out {filtered_count} system-managed relationship(s) from LLM output (system creates these automatically)")
+            # Log specific reasons for filtering
+            for rel in relationships:
+                if rel not in llm_relationships:
+                    if rel.relation in ["HAS_UNDERSTANDING_LEVEL", "ANNOTATED_WITH"]:
+                        logger.debug(f"Filtered system-managed relationship: {rel.source} -{rel.relation}-> {rel.target}")
+                    elif rel.source in cognitive_level_names or rel.target in cognitive_level_names:
+                        logger.warning(
+                            f"Filtered invalid relationship involving CognitiveLevel: "
+                            f"{rel.source} -{rel.relation}-> {rel.target} "
+                            f"(CognitiveLevel nodes can only have HAS_UNDERSTANDING_LEVEL from parent Concept)"
+                        )
+            logger.info(f"Filtered out {filtered_count} invalid/system-managed relationship(s)")
 
         # Create system-managed relationships (this includes cognitive level assessment)
         cognitive_relationships = await self._create_cognitive_level_relationships(nodes)
@@ -604,10 +712,74 @@ class GraphConstructor:
         # Convert relationships (include both LLM-generated and system-managed relationships)
         all_relationships = llm_relationships + cognitive_relationships + highlight_usernote_relationships
 
+        # DEDUPLICATION: Remove generic RELATED_TO edges when multiple edges exist between same nodes
+        # Build a map of (source, target) pairs to all their relationships
+        relationship_map = {}
+        for rel in all_relationships:
+            key = (rel.source, rel.target)
+            if key not in relationship_map:
+                relationship_map[key] = []
+            relationship_map[key].append(rel)
+
+        # Enhanced deduplication: Remove duplicates AND remove RELATED_TO when more specific relationships exist
+        deduplicated_relationships = []
+        seen_relationships = set()  # Track (source, target, relation) to prevent duplicates
+        removed_duplicates = 0
+        removed_related_to = 0
+        removed_bidirectional = 0
+
+        for rel in all_relationships:
+            # Check for exact duplicates (same source, target, and relation type)
+            rel_key = (rel.source, rel.target, rel.relation)
+            if rel_key in seen_relationships:
+                logger.info(
+                    f"Removing duplicate relationship: '{rel.source}' -{rel.relation}-> '{rel.target}'"
+                )
+                removed_duplicates += 1
+                continue
+
+            seen_relationships.add(rel_key)
+
+            # Also check if this is RELATED_TO and there are more specific relationships
+            if rel.relation == 'RELATED_TO':
+                key = (rel.source, rel.target)
+                relations_for_pair = relationship_map[key]
+                other_relations = {r.relation for r in relations_for_pair if r.relation != 'RELATED_TO'}
+
+                if other_relations:
+                    logger.info(
+                        f"Removing redundant RELATED_TO: '{rel.source}' -> '{rel.target}' "
+                        f"(has more meaningful: {other_relations})"
+                    )
+                    removed_related_to += 1
+                    continue
+
+                # Check for bidirectional RELATED_TO (A->B and B->A both exist)
+                # Keep only one direction (alphabetically first) to avoid redundancy
+                reverse_key = (rel.target, rel.source, 'RELATED_TO')
+                if reverse_key in seen_relationships:
+                    # Both directions exist, keep only alphabetically first
+                    if rel.source > rel.target:
+                        logger.info(
+                            f"Removing bidirectional RELATED_TO: '{rel.source}' <-> '{rel.target}' "
+                            f"(keeping opposite direction)"
+                        )
+                        removed_bidirectional += 1
+                        continue
+
+            deduplicated_relationships.append(rel)
+
+        if removed_duplicates > 0:
+            logger.info(f"Removed {removed_duplicates} duplicate relationship(s)")
+        if removed_related_to > 0:
+            logger.info(f"Removed {removed_related_to} redundant RELATED_TO relationship(s)")
+        if removed_bidirectional > 0:
+            logger.info(f"Removed {removed_bidirectional} bidirectional RELATED_TO relationship(s)")
+
         # Filter out self-referencing relationships (where source == target)
         valid_relationships = []
         self_ref_count = 0
-        for rel in all_relationships:
+        for rel in deduplicated_relationships:
             if rel.source == rel.target:
                 logger.warning(f"Filtering out self-referencing relationship: '{rel.source}' {rel.relation} '{rel.target}'")
                 self_ref_count += 1
@@ -637,6 +809,16 @@ class GraphConstructor:
             deleted_count = await self.graph_ops.neo4j_manager.delete_self_referencing_relationships(self.user_id)
             if deleted_count > 0:
                 logger.info(f"Cleaned up {deleted_count} self-referencing relationship(s)")
+
+            # Cleanup redundant RELATED_TO relationships when more specific edges exist
+            related_to_deleted = await self.graph_ops.neo4j_manager.delete_redundant_related_to_relationships(self.user_id)
+            if related_to_deleted > 0:
+                logger.info(f"Cleaned up {related_to_deleted} redundant RELATED_TO relationship(s)")
+
+            # Cleanup empty/placeholder UserNote nodes
+            usernote_deleted = await self.graph_ops.neo4j_manager.delete_empty_usernote_nodes(self.user_id)
+            if usernote_deleted > 0:
+                logger.info(f"Cleaned up {usernote_deleted} empty/placeholder UserNote node(s)")
 
             # After successful save, recalculate bloom levels for all Concept nodes
             concept_names = [node.name for node in nodes if node.type == "Concept"]
@@ -937,7 +1119,12 @@ class GraphConstructor:
             if node.type == "UserNote":
                 node_name_lower = node.name.lower().strip()
                 if (not node.name.strip() or
-                    node_name_lower in ["no user note provided", "no note", "none", "n/a"]):
+                    node_name_lower in [
+                        "no user note provided", "no note", "no note provided",
+                        "none", "n/a", "na", "not applicable",
+                        "no annotation", "no comment", "no user comment",
+                        "-", "--", "...", "null"
+                    ]):
                     logger.warning(f"Skipping empty/placeholder UserNote node: '{node.name}'")
                     continue
 
@@ -1023,9 +1210,14 @@ class GraphConstructor:
 
                 # Filter to meaningful similarity (lower threshold for same book)
                 # Also exclude the node itself if it was already created
+                # CRITICAL: Exclude CognitiveLevel nodes - they can only have HAS_UNDERSTANDING_LEVEL edges
+                # CRITICAL: Theme nodes require VERY HIGH similarity (0.85+) to avoid spaghetti graph
+                min_score = 0.85 if node.type == "Theme" else 0.70
                 relevant_nodes = [
                     n for n in similar_nodes
-                    if n.get('score', 0) >= 0.70 and n.get('nodeName') != node.name
+                    if n.get('score', 0) >= min_score
+                    and n.get('nodeName') != node.name
+                    and n.get('type', '') != 'CognitiveLevel'  # CognitiveLevel nodes cannot have other relationships
                 ]
 
                 if not relevant_nodes:
@@ -1137,12 +1329,26 @@ class GraphConstructor:
                     score = n.get('score', 0.0)
                     node_name = n.get('nodeName', '')
                     candidate_discipline = n.get('discipline')
+                    candidate_type = n.get('type', '')
+
+                    # CRITICAL: Skip CognitiveLevel nodes - they can only have HAS_UNDERSTANDING_LEVEL edges
+                    if candidate_type == 'CognitiveLevel':
+                        continue
 
                     # Skip self and very high similarity (handled elsewhere)
                     if node_name == node.name or score >= 0.70:
                         continue
 
-                    # Include if mid-range similarity OR related discipline
+                    # CRITICAL: Theme nodes require VERY HIGH similarity (0.75+) for contrast detection
+                    # to avoid creating too many weak relationships
+                    if node.type == "Theme":
+                        # For Theme nodes, only include if score is 0.60-0.70 (narrower range)
+                        # and has very high semantic overlap
+                        if 0.60 <= score < 0.70:
+                            candidate_nodes.append(n)
+                        continue  # Skip the general mid-range logic for Theme nodes
+
+                    # Include if mid-range similarity OR related discipline (for non-Theme nodes)
                     in_mid_range = 0.40 <= score < 0.70
 
                     # Calculate discipline similarity (fuzzy matching)

@@ -91,6 +91,98 @@ class Neo4jConnectionManager:
                 logger.warning(f"Deleted {count} self-referencing relationship(s) for user {user_id}")
             return count
 
+    async def delete_redundant_related_to_relationships(self, user_id: str) -> int:
+        """
+        Delete RELATED_TO relationships when more specific relationships exist
+        between the same node pair. This handles two cases:
+
+        1. Direct parallel edges: A->RELATED_TO->B when A->CONTRASTS_WITH->B exists
+        2. Transitive paths: A->RELATED_TO->B when A->C->B path exists (2-3 hops)
+
+        This prevents graph clutter from redundant RELATED_TO edges.
+
+        Returns the count of deleted RELATED_TO relationships.
+        """
+        async with self._ensure_driver().session() as session:
+            total_deleted = 0
+
+            # Step 1: Remove RELATED_TO when direct parallel edges exist
+            query_parallel = """
+            MATCH (a)-[r1:RELATED_TO]->(b)
+            WHERE a.UserId = $user_id
+            WITH a, b, r1
+            MATCH (a)-[r2]->(b)
+            WHERE type(r2) <> 'RELATED_TO'
+            DELETE r1
+            RETURN count(r1) as deleted_count
+            """
+            result = await session.run(query_parallel, user_id=user_id)
+            record = await result.single()
+            parallel_count = record['deleted_count'] if record else 0
+            total_deleted += parallel_count
+
+            if parallel_count > 0:
+                logger.info(f"Cleaned up {parallel_count} parallel RELATED_TO relationship(s)")
+
+            # Step 2: Remove RELATED_TO when transitive paths exist (2-3 hops)
+            # This removes A->RELATED_TO->B when there's an alternative path like A->C->D->B
+            query_transitive = """
+            MATCH (a)-[r:RELATED_TO]->(b)
+            WHERE a.UserId = $user_id
+              AND EXISTS {
+                MATCH path = (a)-[*2..3]->(b)
+                WHERE NONE(rel IN relationships(path) WHERE type(rel) = 'RELATED_TO')
+              }
+            DELETE r
+            RETURN count(r) as deleted_count
+            """
+            result = await session.run(query_transitive, user_id=user_id)
+            record = await result.single()
+            transitive_count = record['deleted_count'] if record else 0
+            total_deleted += transitive_count
+
+            if transitive_count > 0:
+                logger.info(f"Cleaned up {transitive_count} transitive RELATED_TO relationship(s)")
+
+            if total_deleted > 0:
+                logger.info(f"Total cleaned up: {total_deleted} redundant RELATED_TO relationship(s)")
+
+            return total_deleted
+
+    async def delete_empty_usernote_nodes(self, user_id: str) -> int:
+        """
+        Delete UserNote nodes that have empty names or placeholder text.
+        This prevents cluttering the graph with non-existent user annotations.
+
+        Placeholder patterns removed:
+        - Empty strings: ""
+        - Common placeholders: "No user note provided", "None", "N/A", etc.
+
+        Returns the count of deleted UserNote nodes.
+        """
+        query = """
+        MATCH (n:UserNote)
+        WHERE n.UserId = $user_id
+          AND (
+            trim(n.name) = ''
+            OR toLower(trim(n.name)) IN [
+              'no user note provided', 'no note', 'no note provided',
+              'none', 'n/a', 'na', 'not applicable',
+              'no annotation', 'no comment', 'no user comment',
+              '-', '--', '...', 'null'
+            ]
+          )
+        DETACH DELETE n
+        RETURN count(n) as deleted_count
+        """
+        async with self._ensure_driver().session() as session:
+            result = await session.run(query, user_id=user_id)
+            record = await result.single()
+            count = record['deleted_count'] if record else 0
+            if count > 0:
+                logger.info(f"Cleaned up {count} empty/placeholder UserNote node(s) for user {user_id}")
+            return count
+
     async def check_node_exists(self, node_name: str, node_type: str, user_id: str) -> bool:
         query = """
         MATCH (n {name: $node_name, NodeType: $node_type, UserId: $user_id})
@@ -192,6 +284,7 @@ class Neo4jConnectionManager:
         # Special handling for HAS_UNDERSTANDING_LEVEL relationships
         # These MUST match by concept_uuid, not just by name, to avoid connecting
         # Concept nodes to CognitiveLevel nodes that belong to other Concepts
+        # CRITICAL: CognitiveLevel nodes can only have ONE outgoing edge (to their parent Concept)
         if relation_type == "HAS_UNDERSTANDING_LEVEL":
             query = (
                 f"MATCH (source:NodeName {{UserId: $user_id}}), (target:NodeName {{UserId: $user_id}}) "
@@ -202,6 +295,9 @@ class Neo4jConnectionManager:
                 f"AND source.concept_uuid IS NOT NULL "
                 f"AND target.concept_uuid IS NOT NULL "
                 f"AND source.concept_uuid = target.concept_uuid "
+                # CRITICAL: Check that CognitiveLevel doesn't already have an incoming relationship
+                # CognitiveLevel nodes can only have ONE incoming HAS_UNDERSTANDING_LEVEL edge
+                f"AND NOT EXISTS(()-[:HAS_UNDERSTANDING_LEVEL]->(target)) "
                 f"MERGE (source)-[r:`{relation_type}`]->(target) "
                 f"SET r.value = $relation"
             )
@@ -342,6 +438,7 @@ class Neo4jConnectionManager:
 
                     # Special validation for HAS_UNDERSTANDING_LEVEL relationships
                     # Only create if Concept and CognitiveLevel have matching concept_uuid
+                    # AND CognitiveLevel doesn't already have a relationship
                     if relation_type == "HAS_UNDERSTANDING_LEVEL":
                         validation_query = """
                         MATCH (source {UserId: $user_id}), (target {UserId: $user_id})
@@ -349,6 +446,7 @@ class Neo4jConnectionManager:
                           AND source.type = 'Concept' AND target.type = 'CognitiveLevel'
                           AND source.concept_uuid IS NOT NULL AND target.concept_uuid IS NOT NULL
                           AND source.concept_uuid = target.concept_uuid
+                          AND NOT EXISTS(()-[:HAS_UNDERSTANDING_LEVEL]->(target))
                         RETURN count(*) AS valid_count
                         """
                         validation_result = await tx.run(validation_query, {
@@ -360,23 +458,79 @@ class Neo4jConnectionManager:
                         valid_count = validation_data[0]["valid_count"] if validation_data else 0
 
                         if valid_count == 0:
-                            logger.warning(
-                                f"Skipping HAS_UNDERSTANDING_LEVEL relationship: "
-                                f"'{relationship['source']}' -> '{relationship['target']}' "
-                                f"(mismatched or missing concept_uuid)"
-                            )
+                            # Check if it's because of existing relationship
+                            existing_rel_query = """
+                            MATCH (target {UserId: $user_id, name: $target, type: 'CognitiveLevel'})
+                            WHERE EXISTS(()-[:HAS_UNDERSTANDING_LEVEL]->(target))
+                            RETURN count(*) AS existing_count
+                            """
+                            existing_result = await tx.run(existing_rel_query, {
+                                "target": relationship["target"],
+                                "user_id": user_id
+                            })
+                            existing_data = await existing_result.data()
+                            existing_count = existing_data[0]["existing_count"] if existing_data else 0
+
+                            if existing_count > 0:
+                                logger.warning(
+                                    f"Skipping HAS_UNDERSTANDING_LEVEL relationship: "
+                                    f"'{relationship['source']}' -> '{relationship['target']}' "
+                                    f"(CognitiveLevel already has a relationship - can only have ONE)"
+                                )
+                            else:
+                                logger.warning(
+                                    f"Skipping HAS_UNDERSTANDING_LEVEL relationship: "
+                                    f"'{relationship['source']}' -> '{relationship['target']}' "
+                                    f"(mismatched or missing concept_uuid)"
+                                )
                             continue
 
                     # Sanitize relationship type to prevent injection
                     relation_type = relationship["relation"].replace("`", "").replace("'", "").replace('"', "")
 
+                    # CRITICAL: Validate that CognitiveLevel nodes don't have other relationships
+                    # CognitiveLevel nodes can ONLY have HAS_UNDERSTANDING_LEVEL from their parent Concept
+                    # IMPORTANT: Allow HAS_UNDERSTANDING_LEVEL, block all other relationships
+                    if relation_type != "HAS_UNDERSTANDING_LEVEL":
+                        cognitive_check_query = """
+                        MATCH (source {UserId: $user_id, name: $source}), (target {UserId: $user_id, name: $target})
+                        WHERE (source.type = 'CognitiveLevel' OR target.type = 'CognitiveLevel')
+                        RETURN count(*) AS cognitive_count
+                        """
+                        cognitive_result = await tx.run(cognitive_check_query, {
+                            "source": relationship["source"],
+                            "target": relationship["target"],
+                            "user_id": user_id
+                        })
+                        cognitive_data = await cognitive_result.data()
+                        has_cognitive_node = cognitive_data[0]["cognitive_count"] > 0 if cognitive_data else False
+
+                        if has_cognitive_node:
+                            logger.warning(
+                                f"Blocked invalid relationship: {relationship['source']} -{relation_type}-> {relationship['target']} "
+                                f"(CognitiveLevel nodes can only have HAS_UNDERSTANDING_LEVEL from parent Concept)"
+                            )
+                            continue
+
                     # Create the relationship with dynamic relationship type
-                    query = (
-                        f"MATCH (source {{UserId: $user_id}}), (target {{UserId: $user_id}}) "
-                        f"WHERE source.name = $source AND target.name = $target "
-                        f"MERGE (source)-[r:`{relation_type}`]->(target) "
-                        f"SET r.value = $relation"
-                    )
+                    # CRITICAL: For HAS_UNDERSTANDING_LEVEL, must match by concept_uuid to ensure correct pairing
+                    if relation_type == "HAS_UNDERSTANDING_LEVEL":
+                        query = (
+                            f"MATCH (source {{UserId: $user_id}}), (target {{UserId: $user_id}}) "
+                            f"WHERE source.name = $source AND target.name = $target "
+                            f"AND source.type = 'Concept' AND target.type = 'CognitiveLevel' "
+                            f"AND source.concept_uuid IS NOT NULL AND target.concept_uuid IS NOT NULL "
+                            f"AND source.concept_uuid = target.concept_uuid "
+                            f"MERGE (source)-[r:`{relation_type}`]->(target) "
+                            f"SET r.value = $relation"
+                        )
+                    else:
+                        query = (
+                            f"MATCH (source {{UserId: $user_id}}), (target {{UserId: $user_id}}) "
+                            f"WHERE source.name = $source AND target.name = $target "
+                            f"MERGE (source)-[r:`{relation_type}`]->(target) "
+                            f"SET r.value = $relation"
+                        )
                     await tx.run(query, {
                         "source": relationship["source"],
                         "target": relationship["target"],

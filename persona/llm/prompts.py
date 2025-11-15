@@ -181,8 +181,13 @@ The nodes will be indexed in a knowledge graph and vector database hybrid system
   * ✗ WRONG: "Libertarianism versus Classical liberalism" (single node containing comparison)
   * ✓ CORRECT: "Good versus Evil" (single node - universal philosophical concept)
 
-**2. Quality Over Quantity**
+**2. Quality Over Quantity - Term Salience**
 - Aim for 3-5 well-connected, reusable nodes rather than 10 disconnected ones
+- **For Terms specifically**: Extract HIGH to MEDIUM salience terms (3-10 per document)
+  * Term salience test: Is this a specific, meaningful concept/entity in the text?
+  * Each Term should pass at least 2-3 of the 4 salience criteria (grammatical prominence, contextual importance, semantic specificity, distinct type)
+  * Include ideologies (libertarianism, communism), fields (economics, psychology), movements (Austrian School), and places (Louvre, Bulgaria, New York)
+  * Filter out generic noise words aggressively (thing, idea, aspect, concept, etc.)
 - Each node should connect across contexts and be meaningful for the knowledge graph
 - Prioritize concepts that will have multiple relationships
 
@@ -224,19 +229,27 @@ The nodes will be indexed in a knowledge graph and vector database hybrid system
 
 **Node Count Guidelines by Content Type**:
 
-**A. Book Highlights/Notes** → 4-node pattern (Highlight + UserNote + Concept + CognitiveLevel):
-- Extract exactly: 1 Highlight + 1 UserNote + 1 Concept + 1 CognitiveLevel
+**A. Book Highlights/Notes** → 3-4 node pattern (Highlight + optional UserNote + Concept + CognitiveLevel):
+- Extract exactly: 1 Highlight + 1 Concept + 1 CognitiveLevel
+- **OPTIONAL**: 1 UserNote (ONLY if the user actually provided a note/comment)
+  * If no user note exists, DO NOT create a UserNote node
+  * NEVER create placeholder UserNotes like "No user note provided", "", "None", etc.
 - **NO Themes** from highlights/notes (99% of cases) - Concepts come from this content type
-- Concept = full sentence synthesizing highlight + note + context
+- Concept = full sentence synthesizing highlight + note (if present) + context
 
-**B. Book Reading Chunks** → Concept + optional Theme:
+**B. Book Reading Chunks** → Concepts + Terms (Themes extremely rare):
 - Extract: 1-3 Concepts per chunk (500-1000 words)
-- Extract: 0-1 Theme maximum (prefer 0) - Themes come from reading chunks when chapter-level
-- **Theme Criteria** (ALL must be true):
-  * Centrality: Important enough to be a chapter heading
-  * Abstraction: Cannot be expressed as a single Concept sentence
-  * Conservativeness: When in doubt, DON'T extract (Themes are optional!)
-- System will auto-consolidate similar Themes and prune those appearing in < 3 chunks
+- Extract: 3-10 Terms per chunk (named entities, movements, theories mentioned in Concepts)
+- Extract: 0-1 Theme maximum (prefer 0) - **Default to extracting Terms instead of Themes**
+- **When you see a potential Theme, ask: Does it contain named entities?**
+  * If YES → Extract those entities as Terms (+ optional Concept), skip the Theme
+  * If NO and truly abstract → Consider Theme (but still prefer Concept)
+- **Theme Criteria** (ALL must be true, extremely strict):
+  * Recurs across 3+ chapters/chunks
+  * Cannot be expressed as Concept OR Term
+  * No named entities within it (otherwise extract Terms)
+  * Important enough to be a section title
+- System auto-prunes Themes appearing in < 15% of book chunks
 
 **C. Chat Messages** → User Chat + Agent Response + optional Concept:
 - Extract: 1 User Chat + 1 Chat Agent Response
@@ -252,9 +265,10 @@ The nodes will be indexed in a knowledge graph and vector database hybrid system
 
 **Quality Over Quantity**:
 - Aim for 3-5 well-connected, reusable nodes rather than 10 disconnected ones
-- Target ratio: <10% Themes relative to Concepts (e.g., 10 Concepts = max 1 Theme)
+- Target ratio: <5% Themes relative to Concepts (e.g., 20 Concepts = max 1 Theme)
 - Each node should connect across contexts and be meaningful for the knowledge graph
-- **Theme Test**: "Is this THE central theme of the entire chapter?" If no, make it a Concept instead
+- **Theme Test**: "Is this THE MAJOR central theme recurring throughout MULTIPLE chapters?" If no, make it a Concept instead
+- **When uncertain between Theme and Concept**: ALWAYS choose Concept (Themes are rare!)
 
 ## What to Extract
 
@@ -274,18 +288,21 @@ Look at the title/source metadata to determine content type:
 - Pattern: Extract 2-3 nodes (see Chat Pattern below)
 - **IMPORTANT**: DO NOT create Highlight or UserNote nodes for chat content
 
-### BOOK HIGHLIGHT PATTERN: 4-Node Extraction
+### BOOK HIGHLIGHT PATTERN: 3-4 Node Extraction
 
-When ingesting a **BOOK highlight with a user note**, create exactly 4 interconnected nodes:
+When ingesting **BOOK highlights**, create 3-4 interconnected nodes:
 
-1. **Highlight Node** (type: "Highlight")
+1. **Highlight Node** (type: "Highlight") - REQUIRED
    - Name: The highlighted text itself or a concise representation
    - Contains the actual highlighted content from the book/article
    - **ONLY for book highlights** - never for chat messages
 
-2. **UserNote Node** (type: "UserNote")
+2. **UserNote Node** (type: "UserNote") - OPTIONAL
+   - **ONLY create if the user actually provided a note/comment**
    - Name: The user's comment/annotation on the highlight
    - Contains the user's personal reflection, thought, or note
+   - **CRITICAL**: If no user note exists, skip this node entirely
+   - **NEVER** create placeholder UserNotes like "No user note provided", "", "None", "N/A", etc.
    - **ONLY for book notes** - never for chat messages
 
 3. **Concept Node** (type: "Concept")
@@ -379,23 +396,80 @@ Highlight: "Altruism theory" + Note: "Wrong - ignores rights"
 
 ### IMPORTANT: Term vs Theme vs Concept Distinction
 
+**CRITICAL: Extract Terms ALONGSIDE Concepts!**
+
+When creating Concepts, extract the specific named entities within them as separate Term nodes.
+Example: Concept "Libertarianism emphasizes individual freedom..." → ALSO extract Terms: "Libertarianism", "Collectivism"
+
 **Term nodes** (type: "Term"):
-- Single words or short phrases (1-3 words): keywords, jargon, proper nouns, technical terms
-- Examples: "Objectivism", "Free market", "Utilitarianism", "Blockchain", "Neural networks"
-- Use when: The node is a label, name, or keyword rather than a complete thought
-- **Terms do NOT get CognitiveLevel nodes** - they are reference points, not learned concepts
+- **1-3 word entities** representing movements, theories, techniques, styles, or domain-specific concepts
+- **Universal across ALL domains**: Can be compared/contrasted with other Terms
+- **Do NOT get CognitiveLevel nodes** - they're reference points, not learned concepts
+
+**What is a Term?**
+A specific, named entity that: (1) has Wikipedia-level recognition, (2) can be compared to similar concepts, (3) is domain-specific, not generic.
+
+**Term Examples by Domain:**
+- **Philosophy**: Libertarianism, Utilitarianism, Free Will, Determinism, Social Contract
+- **Literature**: Magical Realism, Romanticism, Stream of Consciousness, Hero's Journey
+- **Science**: Natural Selection, Quantum Mechanics, Entropy, Double-Blind Study
+- **Poetry**: Sonnet, Haiku, Free Verse, Enjambment, Metaphor
+- **Art**: Impressionism, Cubism, Chiaroscuro, Renaissance, Abstract
+- **Psychology**: Cognitive Dissonance, CBT, Flow State, Confirmation Bias
+- **Business**: Game Theory, SWOT Analysis, Network Effects, Supply and Demand
+
+**Extraction Criteria** (need 2-3 of these):
+1. **Grammatical importance**: Appears as subject or in emphasized position
+2. **Contextual importance**: Mentioned in Concept OR appears multiple times OR has relationships with other nodes
+3. **Semantic specificity**: Proper noun OR technical term with clear meaning (NOT generic like "science", "art", "psychology")
+4. **Distinct type**: Not a Person, Character, or physical Location (those have their own types)
+
+**Avoid Generic Noise** (use as discipline, not Term):
+- Generic words: "thing", "stuff", "idea", "concept", "aspect", "factor", "approach"
+- Meta-references: "book", "chapter", "author", "text", "passage"
+- Pronouns: "it", "this", "that", "these", "those"
+- Vague nouns: "person", "place", "time", "way", "method"
+- Broad fields: "science", "art", "psychology" (UNLESS discussed as the field itself, e.g., "Economics as a social science" → Extract "Economics")
+
+**Quick Decision Guide:**
+- ✓ "Impressionism" (specific movement) vs ✗ "art" (generic category)
+- ✓ "Natural Selection" (specific theory) vs ✗ "biology" (generic field)
+- ✓ "Sonnet" (specific form) vs ✗ "poem" (generic type)
+- ✓ Named movements/theories/techniques/styles → Term
+- ✗ People/Characters → Use "Person" or "Character" type instead
+- ✗ Physical places → Use "Location" type instead
+
+**Target: 3-10 Terms per document** - extract key named entities mentioned in your Concepts
 
 **Theme nodes** (type: "Theme"):
-- Medium-length phrases (4-10 words) representing MAJOR topics (NOT complete sentences)
-- **EXTRACT SPARINGLY**: Themes are RARE - use only for chapter-level or book-level topics
-- Examples: "Transformation through suffering", "Loss of intellectual mentor and self-reinvention"
+- Medium-length phrases (4-10 words) representing MAJOR recurring topics (NOT complete sentences)
+- **EXTRACT EXTREMELY SPARINGLY**: Themes are VERY RARE - prefer extracting Terms instead
+- **Strict criteria (ALL must be true)**:
+  * Recurs across 3+ chapters/chunks
+  * Cannot be expressed as a single Concept sentence
+  * Too abstract to be a Term (if it's a named entity, make it a Term instead)
+- Examples: "Transformation through suffering", "Tension between tradition and modernity"
 - **Themes do NOT get CognitiveLevel nodes** - they are subjects/topics, not learned concepts
-- **Sources**: Book reading chunks (chapter-level topics), Writing projects (evidence/proof patterns)
-- **IMPORTANT - Theme → Person Extraction**: If a Theme mentions a person or character, ALSO extract a separate Person node
-  - Example 1 (Fiction): Theme "Elizabeth Bennet's character development" → ALSO extract Person node "Elizabeth Bennet"
-  - Example 2 (Non-Fiction): Theme "Professor Chen's economic theory" → ALSO extract Person node "Professor Chen"
-  - Example 3 (Non-Fiction): Theme "Dr. Martinez's critique of behavioral economics" → ALSO extract Person node "Dr. Martinez"
-  - This applies to both real people (economists, philosophers, scientists) and fictional characters
+- **Default to Term or Concept when uncertain** - extract fewer Themes, more Terms
+
+**CRITICAL: Extract Terms and Persons FROM Themes!**
+
+If a Theme mentions named entities (movements, ideologies, concepts) or people, ALSO extract them as separate nodes:
+
+**Term Extraction from Themes:**
+- Theme "Evolution of libertarian thought" → ALSO extract Term "Libertarianism"
+- Theme "Contrast between realism and romanticism" → ALSO extract Terms "Realism" + "Romanticism"
+- Theme "Impact of cognitive dissonance on behavior" → ALSO extract Term "Cognitive Dissonance"
+- Theme "Transition from modernism to postmodernism" → ALSO extract Terms "Modernism" + "Postmodernism"
+
+**Person Extraction from Themes:**
+- Theme "Elizabeth Bennet's character development" → ALSO extract Person "Elizabeth Bennet"
+- Theme "Professor Chen's economic theory" → ALSO extract Person "Professor Chen"
+- Theme "Influence of Ayn Rand on libertarianism" → ALSO extract Person "Ayn Rand" + Term "Libertarianism"
+
+**Better approach: Often you can skip the Theme and just extract Terms + Concepts:**
+- Instead of Theme "Evolution of libertarian thought" → Extract Term "Libertarianism" + Concept about its evolution
+- Instead of Theme "Realism vs romanticism" → Extract Terms "Realism" + "Romanticism" with CONTRASTS_WITH relationship
 
 **Concept nodes** (type: "Concept"):
 - MUST be complete sentences (typically 8+ words with subject + verb + object/complement)
@@ -407,12 +481,13 @@ Highlight: "Altruism theory" + Note: "Wrong - ignores rights"
 - **Concepts MUST have CognitiveLevel nodes** - they represent learned knowledge with depth
 - **Sources**: Highlights/notes, chat conversations, writing project arguments
 
-**Quick Test**:
-- Can it be a Wikipedia article title? → Term
-- Is it a topic/subject phrase but not a complete sentence? → Theme (if chapter-level)
-- Is it a complete sentence? → Concept
+**Type Decision Tree**:
+- Single word/phrase (1-3 words) naming a specific entity? → **Term**
+- Complete sentence expressing understanding? → **Concept**
+- Topic phrase with named entities (e.g., "Evolution of libertarianism")? → Extract **Terms** (e.g., "Libertarianism") + **Concept**, skip Theme
+- Abstract topic phrase (4-10 words) recurring across 3+ chapters with NO named entities? → **Theme** (extremely rare)
 
-**Examples**:
+**Examples of Correct Type Assignment**:
 - ❌ WRONG: "Objectivism" (type: "Concept") with CognitiveLevel
 - ✅ CORRECT: "Objectivism" (type: "Term") - no CognitiveLevel
 - ✅ CORRECT: "Loss of intellectual mentor and self-reinvention" (type: "Theme") - no CognitiveLevel
@@ -550,6 +625,24 @@ NOTE: chunk_ids VALIDATION REQUIRED
       "confidence": 1.0
     },
     {
+      "name": "Revenge",
+      "type": "Term",
+      "discipline": "Psychology",
+      "confidence": 0.95
+    },
+    {
+      "name": "Justice",
+      "type": "Term",
+      "discipline": "Philosophy",
+      "confidence": 0.9
+    },
+    {
+      "name": "Marseilles",
+      "type": "Term",
+      "discipline": "Geography",
+      "confidence": 1.0
+    },
+    {
       "name": "Edmond Dantès",
       "type": "Character",
       "discipline": "Literature",
@@ -562,12 +655,6 @@ NOTE: chunk_ids VALIDATION REQUIRED
       "discipline": "Literature",
       "confidence": 1.0,
       "properties": {"role": "antagonist", "traits": "envious, greedy"}
-    },
-    {
-      "name": "Marseilles",
-      "type": "Location",
-      "discipline": "Geography",
-      "confidence": 1.0
     },
     {
       "name": "Betrayal by trusted colleagues",
@@ -584,6 +671,84 @@ NOTE: chunk_ids VALIDATION REQUIRED
       "type": "CognitiveLevel",
       "discipline": "Education",
       "confidence": 1.0
+    }
+  ]
+}
+
+Additional Example Response showing Term extraction from philosophy/economics content:
+{
+  "nodes": [
+    {
+      "name": "Libertarianism",
+      "type": "Term",
+      "discipline": "Philosophy",
+      "confidence": 0.95
+    },
+    {
+      "name": "Austrian School",
+      "type": "Term",
+      "discipline": "Economics",
+      "confidence": 0.9
+    },
+    {
+      "name": "Communism",
+      "type": "Term",
+      "discipline": "Philosophy",
+      "confidence": 0.95
+    },
+    {
+      "name": "Free Market",
+      "type": "Term",
+      "discipline": "Economics",
+      "confidence": 0.85
+    },
+    {
+      "name": "Libertarianism emphasizes individual freedom over collective control",
+      "type": "Concept",
+      "discipline": "Philosophy",
+      "confidence": 0.9
+    }
+  ]
+}
+
+Additional Example Response showing Terms from diverse domains (literature, science, arts):
+{
+  "nodes": [
+    {
+      "name": "Magical Realism",
+      "type": "Term",
+      "discipline": "Literature",
+      "confidence": 0.9
+    },
+    {
+      "name": "Stream of Consciousness",
+      "type": "Term",
+      "discipline": "Literature",
+      "confidence": 0.85
+    },
+    {
+      "name": "Natural Selection",
+      "type": "Term",
+      "discipline": "Biology",
+      "confidence": 0.95
+    },
+    {
+      "name": "Impressionism",
+      "type": "Term",
+      "discipline": "Art",
+      "confidence": 0.9
+    },
+    {
+      "name": "Sonnet",
+      "type": "Term",
+      "discipline": "Poetry",
+      "confidence": 0.95
+    },
+    {
+      "name": "Magical realism blends fantastical elements with realistic narratives",
+      "type": "Concept",
+      "discipline": "Literature",
+      "confidence": 0.85
     }
   ]
 }
@@ -770,11 +935,13 @@ Guidelines for Creating Relationships:
    SPECIAL CASES - ALWAYS CREATE THESE:
 
    a) **HIGHLIGHT/USERNOTE → CONCEPT PATTERN - HIGHEST PRIORITY** (for BOOK content only):
-      When you see Highlight, UserNote, and Concept nodes, create these relationships:
+      When you see Highlight and Concept nodes, ALWAYS create:
       - Highlight SYNTHESIZED_INTO Concept
+
+      If UserNote exists, ALSO create:
       - UserNote SYNTHESIZED_INTO Concept
 
-      Example with nodes:
+      Example with UserNote:
       - Node1: "Professor James Chen, Dr. Sarah Martinez" (type: Highlight)
       - Node2: "Advisor and mentor to Robert Thompson" (type: UserNote)
       - Node3: "Professor James Chen and Dr. Sarah Martinez were advisors to Robert Thompson" (type: Concept)
@@ -783,9 +950,16 @@ Guidelines for Creating Relationships:
       - Node1 SYNTHESIZED_INTO Node3
       - Node2 SYNTHESIZED_INTO Node3
 
+      Example without UserNote (highlight only):
+      - Node1: "The market economy allocates resources through price signals" (type: Highlight)
+      - Node2: "Market economies use price mechanisms for resource allocation" (type: Concept)
+
+      Relationships:
+      - Node1 SYNTHESIZED_INTO Node2
+
       NOTE: System-managed relationships are created automatically. DO NOT create:
       - HAS_UNDERSTANDING_LEVEL (Concept → CognitiveLevel) - System creates these
-      - ANNOTATED_WITH (Highlight → UserNote) - System creates these
+      - ANNOTATED_WITH (Highlight → UserNote) - System creates these when UserNote exists
 
    b) **CHAT MESSAGE PATTERN** (for CHAT/CONVERSATION content only):
       When you see "User Chat" and "Chat Agent Response" nodes:
@@ -805,13 +979,64 @@ Guidelines for Creating Relationships:
 
       **CRITICAL**: DO NOT create Highlight or UserNote nodes for chat messages!
 
-   c) Reading Progress → Highlights/Notes:
+   c) **TERM-TO-TERM RELATIONSHIPS - HIGH PRIORITY**:
+      When you extract Term nodes, create relationships between them across ALL domains:
+
+      **CONTRASTS_WITH** - Use when Terms represent opposing viewpoints or contradictory concepts:
+
+      Philosophy/Politics:
+      - "Libertarianism" CONTRASTS_WITH "Collectivism"
+      - "Free Will" CONTRASTS_WITH "Determinism"
+      - "Capitalism" CONTRASTS_WITH "Communism"
+
+      Literature:
+      - "Romanticism" CONTRASTS_WITH "Realism"
+      - "Tragedy" CONTRASTS_WITH "Comedy"
+      - "Stream of Consciousness" CONTRASTS_WITH "Linear Narrative"
+
+      Art:
+      - "Impressionism" CONTRASTS_WITH "Realism"
+      - "Abstract" CONTRASTS_WITH "Representational"
+      - "Minimalism" CONTRASTS_WITH "Baroque"
+
+      Science:
+      - "Nature" CONTRASTS_WITH "Nurture"
+      - "Lamarckian Evolution" CONTRASTS_WITH "Darwinian Evolution"
+
+      **OPPOSES** - Use when one Term directly opposes or argues against another:
+      - "Austrian Economics" OPPOSES "Keynesian Economics"
+      - "Psychoanalysis" OPPOSES "Behaviorism"
+      - "Geocentrism" OPPOSES "Heliocentrism"
+
+      **RELATED_TO** - Use for general semantic connections:
+      - "Impressionism" RELATED_TO "Post-Impressionism"
+      - "Sonnet" RELATED_TO "Petrarchan Form"
+      - "Cognitive Dissonance" RELATED_TO "Confirmation Bias"
+
+      **SPECIALIZES** - Use when one Term is a subset or specific type of another:
+      - "Sonnet" SPECIALIZES "Poetry"
+      - "Cubism" SPECIALIZES "Modernism"
+      - "Quantum Mechanics" SPECIALIZES "Physics"
+      - "CBT" SPECIALIZES "Psychotherapy"
+
+      **INFLUENCED** - Use when one movement/theory influenced another:
+      - "Romanticism" INFLUENCED "Transcendentalism"
+      - "Impressionism" INFLUENCED "Post-Impressionism"
+      - "Psychoanalysis" INFLUENCED "Surrealism"
+
+      **CRITICAL**: Always check if Terms can be contrasted or related!
+      - If Concept compares/contrasts ideas → extract both Terms + create relationship
+      - If Concept mentions evolution/influence → create INFLUENCED relationship
+      - If Concept shows opposition → create CONTRASTS_WITH or OPPOSES
+      - Works across ALL domains: fiction, poetry, science, philosophy, arts, etc.
+
+   d) Reading Progress → Highlights/Notes:
       - When a ReadingProgress node exists, connect it with READING_AT to the book
       - Connect any concepts from same page/chapter with ENCOUNTERED_IN to ReadingProgress
       - Example: "Page 47 of Atlas Shrugged" READING_AT "Atlas Shrugged"
       - Example: "Objectivism concept" ENCOUNTERED_IN "Page 47 of Atlas Shrugged"
 
-   c) Person Attribution - ALWAYS CREATE THESE PATTERNS:
+   e) Person Attribution - ALWAYS CREATE THESE PATTERNS:
       - When you see "Chen's theory" or possessive forms:
         * Extract Person node: "Professor James Chen"
         * Extract concept node: "Chen's theory" or the specific theory name
@@ -823,7 +1048,7 @@ Guidelines for Creating Relationships:
         * Relationship: concept ATTRIBUTED_TO "Professor James Chen"
       - CRITICAL: The Person node with FULL NAME must ALWAYS be created when any person is mentioned
 
-   d) Connect to Existing Person Nodes:
+   f) Connect to Existing Person Nodes:
       - BEFORE creating a new Person node, check if that person already exists in the graph context
       - If "Professor James Chen" exists in the graph, use that exact name for relationships
       - If you see duplicate person nodes (e.g., "Professor Chen" as Author and as Economist), treat them as the SAME person
@@ -842,46 +1067,56 @@ Guidelines for Creating Relationships:
       **ALWAYS look for and create these relationships**:
 
       1. Theme → Concept connections (**MOST IMPORTANT - CHECK FIRST**):
-         - When a Theme represents a topic and a Concept elaborates on that topic as a full sentence
+         - **CRITICAL: ONLY create Theme connections when there is VERY HIGH semantic overlap**
+         - Theme relationships must be HIGHLY SPECIFIC and DIRECTLY RELEVANT
+         - The Theme and Concept must share MOST of their core keywords or be near-synonyms
          - Use RELATED_TO, EXPLORES_THEME, EXEMPLIFIES, INSTANTIATES, or ELABORATES_ON
-         - **Search actively**: If you see Theme "Alliance with conservative networks", look for Concepts about alliances, conservatism, or networks
-         - Example: "Loss of intellectual mentor" (Theme) RELATED_TO "Loss of a mentor forces independent thinking" (Concept)
-         - Example: "Economic policy innovation" (Theme) RELATED_TO "Economic collapse leads to policy innovation" (Concept)
-         - Example: "Philosophical crusade" (Theme) ELABORATES_ON "Philosophy requires rational self-interest as its foundation" (Concept)
-         - Example: "Reorientation toward reason" (Theme) RELATED_TO "Reason is the foundation of human survival and flourishing" (Concept)
+         - Example: "Loss of intellectual mentor" (Theme) RELATED_TO "Loss of a mentor forces independent thinking" (Concept) ✓ (high overlap)
+         - Example: "Economic policy innovation" (Theme) RELATED_TO "Economic collapse leads to policy innovation" (Concept) ✓ (high overlap)
+         - COUNTER-example: "Economic policy" (Theme) → "Free market theory" (Concept) ✗ (too general, low overlap)
+         - COUNTER-example: "Political alliances" (Theme) → "Philosophy requires rational thinking" (Concept) ✗ (unrelated)
 
-      2. Theme → Person connections:
-         - When a Theme is associated with a person's work, life, or ideas
+      2. Theme → Term connections:
+         - **CRITICAL: If a Theme mentions named entities, extract them as separate Terms!**
+         - Theme should RELATE_TO or EXPLORES the Terms mentioned within it
+         - Example: Theme "Evolution of libertarian thought" → Extract Term "Libertarianism" + create relationship
+         - Example: Theme "Contrast between realism and romanticism" → Extract Terms "Realism" + "Romanticism" + create relationships
+         - **BETTER: Often you can skip the Theme entirely and just extract Terms + Concepts**
+
+      3. Theme → Person connections:
+         - **CRITICAL: ONLY when the Theme is EXPLICITLY about that person's work or life**
+         - Theme must DIRECTLY mention or strongly imply the person
          - Use RELATED_TO, ATTRIBUTED_TO, ASSOCIATED_WITH
-         - Example: "Self-reinvention after career shift" (Theme) RELATED_TO "Professor James Chen" (Person)
-         - Example: "Free market advocacy" (Theme) ATTRIBUTED_TO "Dr. Sarah Martinez" (Person)
+         - Example: "Self-reinvention after career shift" (Theme) RELATED_TO "Professor James Chen" (Person) ✓ (if Chen had career shift)
+         - COUNTER-example: "Economic theory" (Theme) → "Adam Smith" (Person) ✗ (too broad, many people have economic theories)
 
-      3. Theme → Event connections:
-         - When a Theme is related to a historical or significant event
+      4. Theme → Event connections:
+         - **CRITICAL: ONLY when Theme is DIRECTLY about that specific event**
          - Use RELATED_TO, AROSE_FROM, INFLUENCED_BY
-         - Example: "Policy innovation" (Theme) AROSE_FROM "Great Depression" (Event)
-         - Example: "Economic nationalism" (Theme) INFLUENCED_BY "World War II" (Event)
+         - Example: "Policy innovation during depression" (Theme) AROSE_FROM "Great Depression" (Event) ✓ (very specific)
+         - COUNTER-example: "Economic changes" (Theme) → "World War II" (Event) ✗ (too vague)
 
-      4. Concept → Person connections:
-         - When a Concept is created by, advocated by, or attributed to a person
+      5. Concept → Person connections:
+         - When a Concept is EXPLICITLY created by, advocated by, or attributed to a person
          - Use CREATED_BY, ATTRIBUTED_TO, ADVOCATED_BY, CRITICIZED_BY
          - Example: "Rational self-interest is the basis of economic behavior" (Concept) ATTRIBUTED_TO "Professor James Chen" (Person)
 
-      5. Concept → Event connections:
-         - When a Concept relates to or arose from an event
+      6. Concept → Event connections:
+         - When a Concept DIRECTLY relates to or arose from an event
          - Use RELATED_TO, AROSE_FROM, APPLIES_TO, EXPLAINS
          - Example: "Economic collapse leads to policy innovation" (Concept) EXPLAINS "Great Depression" (Event)
 
-      6. Cross-type semantic relationships:
-         - Look for ANY meaningful semantic connection between different node types
+      7. Cross-type semantic relationships:
+         - **CRITICAL: Be CONSERVATIVE - only create when there is CLEAR, SPECIFIC connection**
+         - The relationship must be EXPLICIT and NON-TRIVIAL
          - Use RELATED_TO as a general connector when a more specific relationship isn't clear
-         - Example: "Free Market Theory" (Term) RELATED_TO "Professor James Chen" (Person)
-         - Example: "University of Chicago" (Location) ASSOCIATED_WITH "Free Market Theory" (Term)
+         - Example: "Free Market Theory" (Term) RELATED_TO "Professor James Chen" (Person) ✓ (if Chen works on this)
+         - COUNTER-example: "Economics" (Term) → "Adam Smith" (Person) ✗ (too broad)
 
-      **IMPORTANT**: Be LIBERAL with these cross-type connections. If two nodes seem related when reading
-      them together, CREATE THE RELATIONSHIP. It's better to have too many semantic connections than too few.
-      The goal is a DENSELY CONNECTED knowledge graph where ideas, people, places, themes, and events
-      are all interlinked.
+      **IMPORTANT**: Be CONSERVATIVE with cross-type connections, especially for Theme nodes.
+      Only create relationships when there is HIGH SEMANTIC OVERLAP and DIRECT RELEVANCE.
+      Theme nodes should connect VERY SPARINGLY - only when truly essential.
+      **Quality over quantity** - a clean, focused graph is better than a cluttered one.
 
 3. When to NOT Create Relationships:
    - When connections feel forced or superficial
@@ -942,11 +1177,13 @@ Identify ALL meaningful relationships between new and existing concepts, includi
 4. **General semantic** relationships (topically related, even if not similar)
 
 **Important Guidelines**:
-- **Contrasts are just as important as similarities** - actively look for philosophical oppositions
+- **Contrasts are important BUT must be SPECIFIC and DIRECT**
 - Concepts don't need similar wording to be related - "altruism" and "individualism" are clearly related through opposition
 - Consider the **discipline/domain** - concepts in the same field are likely related even if they describe opposite positions
-- Be **liberal** with relationship creation - it's better to over-connect than under-connect
-- A concept and its opposite are **highly related** semantically (they address the same topic from different angles)
+- **Be CONSERVATIVE** - only create relationships when they are CLEAR and NON-TRIVIAL
+- **CRITICAL for Theme nodes**: Theme relationships require VERY HIGH semantic overlap - only connect when core keywords match
+- A concept and its opposite are highly related semantically (they address the same topic from different angles)
+- **Quality over quantity** - focus on strong, meaningful relationships rather than creating many weak ones
 
 **Examples of Contrasting Relationships**:
 - "altruism is collectivism" CONTRASTS_WITH "individualism"
@@ -1038,6 +1275,9 @@ You are an expert in educational psychology and Bloom's Taxonomy. Your task is t
 * **Analyze** or **Evaluate** - Grades, critiques, or judges
   - Examples: "the issue is...", "wrong", "flaw is...", "the problem is being extreme!"
   - Identifies problems, strengths, or makes critical judgments
+  - **IMPORTANT**: Quoting someone's harsh judgment/critique also indicates Evaluate
+    - "X called Y 'poison'" → Evaluate (noting harsh critical language)
+    - "X described Y as enemy" → Evaluate (reporting negative assessment)
   - Note: Use "Analyze" for breaking down; "Evaluate" for judging/critiquing
 
 * **Create** - Generates new idea or synthesis
@@ -1047,7 +1287,11 @@ You are an expert in educational psychology and Bloom's Taxonomy. Your task is t
 **Assessment Rules**:
 1. Focus ONLY on what the user wrote in their reaction
 2. Brief critical notes can indicate high levels: "X's issue is extreme!" → Evaluate
-3. When unclear: default to "Remember" or "Understand"
+3. **Critical language markers** indicate Evaluate even when quoted:
+   - Harsh descriptors: "poison", "enemy", "threat", "danger", "toxic", "destructive"
+   - Critical verbs: "opposed", "rejected", "attacked", "condemned", "denounced"
+   - Negative judgments: "wrong", "flawed", "problematic", "harmful"
+4. When unclear: default to "Remember" or "Understand"
 
 **Input Format**:
 You will receive a UserNote text (the user's reaction to something they read/highlighted).

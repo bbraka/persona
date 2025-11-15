@@ -536,27 +536,29 @@ class GraphOps:
                     if concept_node.name in node_mapping:
                         merged_into = node_mapping[concept_node.name]
 
-                        # If this CognitiveLevel has the merged Concept's UUID, update it
+                        # CRITICAL FIX: Only update if this CognitiveLevel's UUID matches the merged Concept's UUID
+                        # This ensures we only update CognitiveLevels that belong to the merged Concept
                         if hasattr(concept_node, 'concept_uuid') and concept_node.concept_uuid:
-                            # Get the UUID of the target (canonical) Concept
-                            target_concept_uuid = await self._get_concept_uuid_if_exists(merged_into, user_id)
-                            if target_concept_uuid:
-                                # Update the CognitiveLevel's concept_uuid to match the canonical Concept
-                                concept_uuid_updates.append({
-                                    "cognitive_level_name": node.name,
-                                    "old_uuid": node.concept_uuid,
-                                    "new_uuid": target_concept_uuid
-                                })
-                                # Update in the node data
-                                for node_data in nodes_data:
-                                    if node_data["name"] == node.name:
-                                        node_data["properties"]["concept_uuid"] = target_concept_uuid
-                                        logger.info(
-                                            f"Updated concept_uuid for CognitiveLevel '{node.name}': "
-                                            f"{node.concept_uuid} -> {target_concept_uuid} "
-                                            f"(Concept merged: {concept_node.name} -> {merged_into})"
-                                        )
-                                        break
+                            if node.concept_uuid == concept_node.concept_uuid:
+                                # Get the UUID of the target (canonical) Concept
+                                target_concept_uuid = await self._get_concept_uuid_if_exists(merged_into, user_id)
+                                if target_concept_uuid:
+                                    # Update the CognitiveLevel's concept_uuid to match the canonical Concept
+                                    concept_uuid_updates.append({
+                                        "cognitive_level_name": node.name,
+                                        "old_uuid": node.concept_uuid,
+                                        "new_uuid": target_concept_uuid
+                                    })
+                                    # Update in the node data
+                                    for node_data in nodes_data:
+                                        if node_data["name"] == node.name:
+                                            node_data["properties"]["concept_uuid"] = target_concept_uuid
+                                            logger.info(
+                                                f"Updated concept_uuid for CognitiveLevel '{node.name}': "
+                                                f"{node.concept_uuid} -> {target_concept_uuid} "
+                                                f"(Concept merged: {concept_node.name} -> {merged_into})"
+                                            )
+                                            break
 
         # Execute everything in a single transaction
         await self.neo4j_manager.update_graph_transactional(
@@ -1161,23 +1163,41 @@ class GraphOps:
 
     async def cleanup_invalid_cognitive_level_relationships(self, user_id: str) -> Dict[str, int]:
         """
-        Clean up invalid CognitiveLevel data:
+        Clean up invalid CognitiveLevel data to enforce Rule 2: "CognitiveLevel nodes cannot exist without an edge."
+
+        Performs four cleanup operations:
         1. Delete HAS_UNDERSTANDING_LEVEL relationships where Concept and CognitiveLevel have mismatched concept_uuid
         2. Delete CognitiveLevel nodes that don't have a concept_uuid property (mandatory field)
+        3. Delete CognitiveLevel nodes with no incoming HAS_UNDERSTANDING_LEVEL relationship (orphaned nodes)
+        4. Delete CognitiveLevel nodes whose parent Concept (with matching concept_uuid) was deleted
 
-        This ensures the UUID-based constraint is enforced: only nodes with matching
-        UUIDs should be connected via HAS_UNDERSTANDING_LEVEL relationships, and all
-        CognitiveLevel nodes MUST have a concept_uuid.
+        This ensures:
+        - Only nodes with matching UUIDs are connected via HAS_UNDERSTANDING_LEVEL
+        - All CognitiveLevel nodes MUST have a concept_uuid
+        - All CognitiveLevel nodes MUST have exactly ONE incoming HAS_UNDERSTANDING_LEVEL edge
+        - CognitiveLevel nodes cannot outlive their parent Concept nodes
 
         Args:
             user_id: User ID
 
         Returns:
-            Dict with cleanup statistics: {"deleted_relationships": int, "deleted_nodes": int}
+            Dict with cleanup statistics: {
+                "deleted_relationships": int,
+                "deleted_nodes_no_uuid": int,
+                "deleted_orphaned_nodes": int,
+                "deleted_nodes_no_parent": int,
+                "total_deleted_nodes": int
+            }
         """
         if not self.neo4j_manager.driver:
             logger.error("Neo4j driver is not initialized.")
-            return {"deleted_relationships": 0, "deleted_nodes": 0}
+            return {
+                "deleted_relationships": 0,
+                "deleted_nodes_no_uuid": 0,
+                "deleted_orphaned_nodes": 0,
+                "deleted_nodes_no_parent": 0,
+                "total_deleted_nodes": 0
+            }
 
         # Step 1: Delete invalid relationships (mismatched UUIDs)
         relationship_query = """
@@ -1194,7 +1214,7 @@ class GraphOps:
         """
 
         # Step 2: Delete CognitiveLevel nodes without concept_uuid (mandatory field)
-        node_query = """
+        node_no_uuid_query = """
         // Find all CognitiveLevel nodes without concept_uuid
         MATCH (cl:NodeName {UserId: $user_id})
         WHERE cl.type = 'CognitiveLevel'
@@ -1206,31 +1226,92 @@ class GraphOps:
         RETURN count(cl) AS deleted_count
         """
 
+        # Step 3: Delete orphaned CognitiveLevel nodes (no incoming HAS_UNDERSTANDING_LEVEL relationship)
+        orphaned_nodes_query = """
+        // Find CognitiveLevel nodes with no incoming HAS_UNDERSTANDING_LEVEL relationship
+        MATCH (cl:NodeName {UserId: $user_id})
+        WHERE cl.type = 'CognitiveLevel'
+          AND cl.concept_uuid IS NOT NULL
+          AND NOT EXISTS(()-[:HAS_UNDERSTANDING_LEVEL]->(cl))
+
+        // Delete the orphaned node (removes any other relationships if they exist)
+        DETACH DELETE cl
+
+        RETURN count(cl) AS deleted_count
+        """
+
+        # Step 4: Delete CognitiveLevel nodes whose parent Concept doesn't exist
+        missing_parent_query = """
+        // Find CognitiveLevel nodes where the parent Concept with matching UUID doesn't exist
+        MATCH (cl:NodeName {UserId: $user_id})
+        WHERE cl.type = 'CognitiveLevel'
+          AND cl.concept_uuid IS NOT NULL
+          AND NOT EXISTS(
+            (concept:NodeName {UserId: $user_id})
+            WHERE concept.type = 'Concept'
+              AND concept.concept_uuid = cl.concept_uuid
+          )
+
+        // Delete the orphaned node
+        DETACH DELETE cl
+
+        RETURN count(cl) AS deleted_count
+        """
+
         async with self.neo4j_manager.driver.session() as session:
-            # Clean up invalid relationships
+            # Execute all cleanup operations in order
             rel_result = await session.run(relationship_query, user_id=user_id)
             rel_data = await rel_result.data()
             deleted_relationships = rel_data[0]["deleted_count"] if rel_data else 0
 
-            # Clean up nodes without concept_uuid
-            node_result = await session.run(node_query, user_id=user_id)
-            node_data = await node_result.data()
-            deleted_nodes = node_data[0]["deleted_count"] if node_data else 0
+            node_no_uuid_result = await session.run(node_no_uuid_query, user_id=user_id)
+            node_no_uuid_data = await node_no_uuid_result.data()
+            deleted_nodes_no_uuid = node_no_uuid_data[0]["deleted_count"] if node_no_uuid_data else 0
 
+            orphaned_result = await session.run(orphaned_nodes_query, user_id=user_id)
+            orphaned_data = await orphaned_result.data()
+            deleted_orphaned_nodes = orphaned_data[0]["deleted_count"] if orphaned_data else 0
+
+            missing_parent_result = await session.run(missing_parent_query, user_id=user_id)
+            missing_parent_data = await missing_parent_result.data()
+            deleted_nodes_no_parent = missing_parent_data[0]["deleted_count"] if missing_parent_data else 0
+
+            # Log warnings for each cleanup type
             if deleted_relationships > 0:
                 logger.warning(
                     f"Cleaned up {deleted_relationships} invalid CognitiveLevel relationship(s) "
                     f"with mismatched concept_uuid values"
                 )
 
-            if deleted_nodes > 0:
+            if deleted_nodes_no_uuid > 0:
                 logger.warning(
-                    f"Deleted {deleted_nodes} CognitiveLevel node(s) without concept_uuid property (mandatory field)"
+                    f"Deleted {deleted_nodes_no_uuid} CognitiveLevel node(s) without concept_uuid property (mandatory field)"
                 )
+
+            if deleted_orphaned_nodes > 0:
+                logger.warning(
+                    f"Deleted {deleted_orphaned_nodes} orphaned CognitiveLevel node(s) "
+                    f"with no incoming HAS_UNDERSTANDING_LEVEL relationship"
+                )
+
+            if deleted_nodes_no_parent > 0:
+                logger.warning(
+                    f"Deleted {deleted_nodes_no_parent} CognitiveLevel node(s) "
+                    f"whose parent Concept was deleted"
+                )
+
+            total_deleted_nodes = (
+                deleted_nodes_no_uuid +
+                deleted_orphaned_nodes +
+                deleted_nodes_no_parent
+            )
 
             return {
                 "deleted_relationships": deleted_relationships,
-                "deleted_nodes": deleted_nodes
+                "deleted_nodes_no_uuid": deleted_nodes_no_uuid,
+                "deleted_orphaned_nodes": deleted_orphaned_nodes,
+                "deleted_nodes_no_parent": deleted_nodes_no_parent,
+                "total_deleted_nodes": total_deleted_nodes
             }
 
     async def get_concept_bloom_history(self, concept_name: str, user_id: str) -> List[Dict[str, str]]:
@@ -1311,7 +1392,7 @@ class GraphOps:
         - Tier 2: This method prunes Themes with insufficient evidence
 
         A Theme is kept if it meets EITHER criterion:
-        - Meets percentage-based threshold: 10% of book's chunks (min 3, max 15), OR
+        - Meets percentage-based threshold: 15% of book's chunks (min 3, max 15), OR
         - Has 2+ book_ids (recurring theme across multiple books)
 
         Percentage-based threshold examples:
@@ -1363,12 +1444,12 @@ class GraphOps:
         WITH book_id, size(all_chunks_in_book) as total_chunks_in_book
 
         // Step 2: Calculate percentage-based threshold for each book
-        // Formula: max(3, min(15, total_chunks * 0.10))
+        // Formula: max(3, min(15, total_chunks * 0.15))
         WITH book_id, total_chunks_in_book,
              toInteger(CASE
-                 WHEN total_chunks_in_book * 0.10 < 3 THEN 3
-                 WHEN total_chunks_in_book * 0.10 > 15 THEN 15
-                 ELSE total_chunks_in_book * 0.10
+                 WHEN total_chunks_in_book * 0.15 < 3 THEN 3
+                 WHEN total_chunks_in_book * 0.15 > 15 THEN 15
+                 ELSE total_chunks_in_book * 0.15
              END) as threshold_for_book
 
         // Step 3: Collect thresholds by book_id
