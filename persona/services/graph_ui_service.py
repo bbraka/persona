@@ -113,6 +113,7 @@ class GraphUIService:
                 logger.info(f"Total nodes matching filters: {total_nodes}")
 
         # Query 2: Get topics (aggregated by discipline)
+        # Note: bloom_distribution comes from CognitiveLevel nodes linked to Concepts in this discipline
         topics_query = """
         MATCH (n:NodeName)
         WHERE n.UserId = $user_id
@@ -123,8 +124,21 @@ class GraphUIService:
           AND (NOT $has_date_from OR n.created_at >= $date_from)
           AND (NOT $has_date_to OR n.created_at <= $date_to)
         WITH n.discipline AS topic,
-             count(n) AS entity_count,
-             collect(n.bloom_level) AS bloom_levels
+             count(n) AS entity_count
+        
+        // Get CognitiveLevel nodes for concepts in this discipline (with filters)
+        OPTIONAL MATCH (concept:NodeName)-[:HAS_UNDERSTANDING_LEVEL]->(cl:NodeName)
+        WHERE concept.UserId = $user_id
+          AND concept.discipline = topic
+          AND cl.type = 'CognitiveLevel'
+          AND (NOT $has_book_id OR $book_id IN concept.book_id)
+          AND (NOT $has_highlight_id OR $highlight_id IN concept.highlight_id)
+          AND (NOT $has_writing_id OR $writing_id IN concept.writing_id)
+          AND (NOT $has_date_from OR concept.created_at >= $date_from)
+          AND (NOT $has_date_to OR concept.created_at <= $date_to)
+        WITH topic, entity_count, collect(cl.name) AS bloom_levels
+        
+        // Get relationship count for this discipline
         OPTIONAL MATCH (n1:NodeName)-[r]-(n2:NodeName)
         WHERE n1.UserId = $user_id
           AND n1.discipline = topic
@@ -181,6 +195,7 @@ class GraphUIService:
 
         # Query 5: Get nodes with cursor-based pagination
         # Uses composite index on (UserId, name) for efficient seeking
+        # For Concept nodes, we also fetch their highest CognitiveLevel
         nodes_query_base = """
         MATCH (n:NodeName)
         WHERE n.UserId = $user_id
@@ -190,18 +205,46 @@ class GraphUIService:
           AND (NOT $has_writing_id OR $writing_id IN n.writing_id)
           AND (NOT $has_date_from OR n.created_at >= $date_from)
           AND (NOT $has_date_to OR n.created_at <= $date_to)
+        
+        // Get highest cognitive level for Concept nodes
+        OPTIONAL MATCH (n)-[:HAS_UNDERSTANDING_LEVEL]->(cl:NodeName)
+        WHERE n.type = 'Concept' AND cl.type = 'CognitiveLevel'
+        WITH n, 
+             CASE 
+               WHEN cl.name = 'Create' THEN 6
+               WHEN cl.name = 'Evaluate' THEN 5
+               WHEN cl.name = 'Analyze' THEN 4
+               WHEN cl.name = 'Apply' THEN 3
+               WHEN cl.name = 'Understand' THEN 2
+               WHEN cl.name = 'Remember' THEN 1
+               ELSE 0
+             END AS level_rank,
+             cl.name AS level_name
+        WITH n, 
+             max(level_rank) AS max_rank,
+             collect(level_name) AS all_levels
+        WITH n,
+             CASE max_rank
+               WHEN 6 THEN 'Create'
+               WHEN 5 THEN 'Evaluate'
+               WHEN 4 THEN 'Analyze'
+               WHEN 3 THEN 'Apply'
+               WHEN 2 THEN 'Understand'
+               WHEN 1 THEN 'Remember'
+               ELSE ''
+             END AS highest_bloom_level
         """
 
         # Add cursor condition if provided (efficient with composite index)
         if limit is not None and cursor:
-            nodes_query_base += "  AND n.name > $cursor\n"
+            nodes_query_base += "  WHERE n.name > $cursor\n"
 
         nodes_query = nodes_query_base + """
         RETURN elementId(n) AS id,
                n.name AS name,
                n.type AS type,
                n.discipline AS discipline,
-               n.bloom_level AS bloom_level,
+               highest_bloom_level AS bloom_level,
                n.confidence AS confidence,
                n.chunk_ids AS chunk_ids,
                n.book_id AS book_id,
@@ -227,13 +270,24 @@ class GraphUIService:
             logger.info(f"Topics query returned {len(topics_data)} results")
 
             # Process bloom levels into distribution
+            # Map bloom level names to numeric values
+            bloom_level_map = {
+                "Remember": 1,
+                "Understand": 2,
+                "Apply": 3,
+                "Analyze": 4,
+                "Evaluate": 5,
+                "Create": 6
+            }
+            
             topics_list = []
             for record in topics_data:
                 bloom_levels = record.get("bloom_levels", [])
                 bloom_distribution = {}
                 for level in bloom_levels:
-                    if level:
-                        bloom_distribution[level] = bloom_distribution.get(level, 0) + 1
+                    if level and level in bloom_level_map:
+                        numeric_level = bloom_level_map[level]
+                        bloom_distribution[numeric_level] = bloom_distribution.get(numeric_level, 0) + 1
 
                 topics_list.append({
                     "name": record["name"],
